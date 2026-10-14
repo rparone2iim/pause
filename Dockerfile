@@ -3,7 +3,7 @@
 # ─────────────────────────────────────────────────────────────
 
 # 1) Dépendances (installées exactement selon le package-lock.json)
-FROM node:22-slim AS deps
+FROM node:26-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -20,7 +20,7 @@ USER node
 CMD ["sh", "-c", "npx tsx db/migrate.ts && npx tsx db/seed.ts"]
 
 # 4) Image finale, minimale
-FROM node:22-slim AS runner
+FROM node:26-slim AS runner
 ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0
 WORKDIR /app
 # Le code appartient à root et est en lecture seule pour l'utilisateur "node" :
