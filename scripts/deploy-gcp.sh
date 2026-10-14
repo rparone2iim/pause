@@ -15,9 +15,8 @@ echo "▶ Archive du code (sans node_modules, .next, uploads, .env)"
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude=node_modules --exclude=.next --exclude=uploads --exclude=.git \
   --exclude='.env' --exclude='.env.local' --exclude='*.log' --exclude='.DS_Store' -czf "$TGZ" .
 
-echo "▶ Envoi sur la VM"
-gcloud compute scp "$TGZ" scripts/remote-deploy.sh "$VM:/tmp/" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet
-gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
-  --command "mv /tmp/$(basename "$TGZ") /tmp/pause.tgz && bash /tmp/remote-deploy.sh /tmp/pause.tgz manuel-$(date +%Y%m%d-%H%M)"
+echo "▶ Envoi + rebuild sur la VM (une seule connexion SSH, tunnel IAP)"
+gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet < "$TGZ" \
+  --command "cat > /tmp/pause.tgz && tar -xzOf /tmp/pause.tgz ./scripts/remote-deploy.sh | bash -s -- /tmp/pause.tgz manuel-$(date +%Y%m%d-%H%M)"
 
 echo "✔ En ligne : https://34-155-60-223.sslip.io"
