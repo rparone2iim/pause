@@ -11,6 +11,8 @@ const schema = z.object({
   TRUST_PROXY: z.enum(["true", "false"]).default("false"),
   GEMINI_API_KEY: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(20).optional()), // facultatif : sans clé, l'assistant passe en mode local
   AI_MODEL: z.string().regex(/^[a-z0-9.\-]+$/).default("gemini-3.5-flash-lite"),
+  VERTEX_PROJECT: z.preprocess((v) => (v === "" ? undefined : v), z.string().regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/).optional()), // prod : Gemini via Vertex AI, sans clé
+  VERTEX_LOCATION: z.string().regex(/^[a-z0-9-]+$/).default("global"),
   AI_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(0).default(30),
   AI_DAILY_LIMIT_GLOBAL: z.coerce.number().int().min(0).default(500),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),

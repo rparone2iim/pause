@@ -33,7 +33,7 @@ npm run db:seed             # données de démo (La Défense)
 npm run dev                 # http://localhost:3000
 ```
 
-**Assistant IA (Gemini) :** il marche sans rien configurer (réponses automatiques). Pour brancher Gemini : crée une clé gratuite sur https://aistudio.google.com/apikey (« Create API key »), colle-la dans `.env` (`GEMINI_API_KEY=…`) et relance. Le modèle par défaut est `gemini-3.5-flash-lite`.
+**Assistant IA (Gemini) :** sans configuration, il donne des réponses automatiques (mode local). En prod, il utilise Gemini via **Vertex AI, sans aucune clé**. Pour avoir les vraies réponses Gemini en dev, il faut un accès au projet Google Cloud. Mets `VERTEX_PROJECT=pause-demo-3zbux5` dans `.env`, puis lance avec `VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token) npm run dev` (le jeton dure 1 h). Autre solution : une clé AI Studio dans `GEMINI_API_KEY`. Le modèle par défaut est `gemini-3.5-flash-lite`.
 
 **Comptes de démo :** `demo@pause.dev` et `alex@pause.dev`, mot de passe `DemoPause2026`.
 
@@ -48,9 +48,10 @@ npm run dev                 # http://localhost:3000
 
 ### En ligne (Google Cloud)
 
-**https://34-155-60-223.sslip.io**. C'est une VM Compute Engine `e2-medium` à Paris (projet `pause-demo-3zbux5`) qui fait tourner le même `docker-compose.yml`. Le certificat HTTPS est fourni par Let's Encrypt via Caddy. Le pare-feu n'ouvre que 80/443 au public, et SSH n'est accessible que depuis une IP autorisée ou via le tunnel IAP.
+**https://34-155-60-223.sslip.io**. C'est une VM Compute Engine `t2d-standard-1` (1 vCPU AMD, 4 Go) à Paris (projet `pause-demo-3zbux5`) qui fait tourner le même `docker-compose.yml`. Le certificat HTTPS est fourni par Let's Encrypt via Caddy. Le pare-feu n'ouvre que 80/443 au public, et SSH n'est accessible que depuis une IP autorisée ou via le tunnel IAP.
 
 - **Mettre à jour le site :** il suffit de **pousser sur `main`**. La CI/CD décrite plus bas teste puis déploie toute seule. En secours seulement : `bash scripts/deploy-gcp.sh` (il faut `gcloud` connecté au compte du projet). Le `.env` de prod (secrets aléatoires) reste sur la VM, et la base et les photos sont conservées.
+- **IA :** Gemini via Vertex AI, **sans clé API**. La VM tourne avec le compte de service `pause-app`, qui n'a qu'un seul droit : `roles/aiplatform.user`. L'app demande un jeton temporaire au metadata server de Google Cloud. La mise en place est dans `infra/gcp/setup-vertex.sh`.
 - **Version en ligne :** `cat /opt/pause/.revision` sur la VM (hash du commit déployé).
 - **Logs :** `gcloud compute ssh pause-vm --zone europe-west9-b --project pause-demo-3zbux5 --command 'cd /opt/pause && sudo docker compose logs --tail 50 app'`
 - **Tout supprimer après la soutenance :** `gcloud projects delete pause-demo-3zbux5`

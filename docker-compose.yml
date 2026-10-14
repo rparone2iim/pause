@@ -35,7 +35,12 @@ services:
       APP_ORIGIN: ${PUBLIC_ORIGIN:-https://localhost} # en prod : PUBLIC_ORIGIN=https://<ton-domaine> dans .env
       UPLOAD_DIR: /app/uploads
       TRUST_PROXY: "true" # Caddy est devant : on peut lire la vraie IP client
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-} # facultatif : vide = assistant en mode local (sans IA)
+      # IA : en prod sur Google Cloud, Gemini via Vertex AI SANS clé (identité de la VM).
+      # Ailleurs : GEMINI_API_KEY (facultatif). Rien du tout = assistant en mode local (sans IA).
+      VERTEX_PROJECT: ${VERTEX_PROJECT:-}
+      VERTEX_LOCATION: ${VERTEX_LOCATION:-global}
+      AI_MODEL: ${AI_MODEL:-gemini-3.5-flash-lite}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     volumes:
       - uploads:/app/uploads
     read_only: true # système de fichiers en lecture seule…

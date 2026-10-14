@@ -7,7 +7,10 @@ import type { NearbySpot } from "./nearby";
  * Assistant « Demander à Pause »
  * ───────────────────────────────
  * Deux modes :
- *  - "ai"    : si GEMINI_API_KEY est défini → Gemini (Google) rédige la réponse.
+ *  - "ai"    : Gemini (Google) rédige la réponse, via
+ *                · Vertex AI si VERTEX_PROJECT est défini (prod) : AUCUNE clé, le serveur Google Cloud
+ *                  fournit un jeton temporaire lié au compte de service de la VM ;
+ *                · ou l'API Gemini « AI Studio » si GEMINI_API_KEY est défini.
  *  - "local" : sinon (ou si l'IA ne répond pas) → réponse construite par des règles simples.
  *              La démo ne peut donc jamais planter à cause de l'IA.
  *
@@ -19,7 +22,7 @@ import type { NearbySpot } from "./nearby";
  *  4. Message ≤ 500 caractères, historique ≤ 10 messages, réponse ≤ 800 tokens.
  *
  * Sécurité (voir SECURITY.md § IA) :
- *  - La clé d'API reste côté serveur (jamais envoyée au navigateur).
+ *  - En prod, pas de clé du tout (Vertex AI + jeton temporaire). En dev, la clé reste côté serveur.
  *  - L'IA ne reçoit QUE : la question, l'historique court, et la liste des spots proches.
  *    Pas d'email, pas d'id utilisateur, pas de coordonnées GPS de l'utilisateur.
  *  - Les descriptions de spots sont écrites par des utilisateurs → traitées comme des DONNÉES
@@ -193,16 +196,52 @@ type GeminiResponse = {
   promptFeedback?: { blockReason?: string };
 };
 
-export async function aiAnswer(message: string, history: ChatTurn[], spots: NearbySpot[], requestId: string): Promise<AssistantResult | null> {
+/*
+ * Vertex AI sans clé : sur une VM Google Cloud, le « metadata server » (adresse interne 169.254.169.254,
+ * inaccessible depuis Internet) délivre un jeton OAuth d'1 h pour le compte de service de la VM.
+ * En dev, on peut fournir un jeton à la main : VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token)
+ */
+let cachedToken: { value: string; expiresAt: number } | null = null;
+
+async function vertexToken(): Promise<string> {
+  if (process.env.VERTEX_ACCESS_TOKEN) return process.env.VERTEX_ACCESS_TOKEN;
+  if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.value;
+  const res = await fetch("http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token", {
+    headers: { "Metadata-Flavor": "Google" },
+    signal: AbortSignal.timeout(3_000),
+  });
+  if (!res.ok) throw new Error(`metadata ${res.status}`);
+  const t = (await res.json()) as { access_token: string; expires_in: number };
+  cachedToken = { value: t.access_token, expiresAt: Date.now() + t.expires_in * 1000 };
+  return t.access_token;
+}
+
+/** URL + en-têtes d'authentification de Gemini, ou null si aucune IA n'est configurée. */
+async function geminiTarget(model: string): Promise<{ url: string; headers: Record<string, string> } | null> {
+  const project = process.env.VERTEX_PROJECT;
+  if (project) {
+    const location = process.env.VERTEX_LOCATION ?? "global";
+    const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+    return {
+      url: `https://${host}/v1/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(location)}/publishers/google/models/${encodeURIComponent(model)}:generateContent`,
+      headers: { authorization: `Bearer ${await vertexToken()}` },
+    };
+  }
   const key = process.env.GEMINI_API_KEY;
   if (!key) return null;
-  const model = process.env.AI_MODEL ?? "gemini-3.5-flash-lite";
   const base = process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com";
+  // La clé part dans un header (jamais dans l'URL, sinon elle finirait dans des logs de proxy)
+  return { url: `${base}/v1beta/models/${encodeURIComponent(model)}:generateContent`, headers: { "x-goog-api-key": key } };
+}
+
+export async function aiAnswer(message: string, history: ChatTurn[], spots: NearbySpot[], requestId: string): Promise<AssistantResult | null> {
+  const model = process.env.AI_MODEL ?? "gemini-3.5-flash-lite";
   try {
-    const res = await fetch(`${base}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    const target = await geminiTarget(model);
+    if (!target) return null;
+    const res = await fetch(target.url, {
       method: "POST",
-      // La clé part dans un header (jamais dans l'URL, sinon elle finirait dans des logs de proxy)
-      headers: { "x-goog-api-key": key, "content-type": "application/json" },
+      headers: { ...target.headers, "content-type": "application/json" },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt(spots) }] },
         // Gemini nomme les rôles "user" et "model" (et non "assistant")
