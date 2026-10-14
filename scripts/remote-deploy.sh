@@ -13,7 +13,9 @@ trap 'rm -rf "$STAGE" "$ARCHIVE"' EXIT
 echo "▶ Installation du code ($REVISION)"
 tar -xzf "$ARCHIVE" -C "$STAGE"
 # --delete : un fichier supprimé du dépôt disparaît aussi du serveur (sauf le .env de prod)
-sudo rsync -a --delete --exclude=.env "$STAGE"/ "$APP_DIR"/
+# -rlt (pas -a) : le code appartient à root, pas à l'utilisateur qui déploie
+sudo rsync -rlt --delete --exclude=.env "$STAGE"/ "$APP_DIR"/
+sudo chown -R root:root "$APP_DIR" && sudo chmod 755 "$APP_DIR"
 echo "$REVISION" | sudo tee "$APP_DIR/.revision" >/dev/null
 
 echo "▶ Build + redémarrage (migrations appliquées par le service migrate)"
