@@ -1,0 +1,11 @@
+# Reverse proxy HTTPS (pilier 3 : TLS).
+# En local, Caddy génère un certificat auto-signé pour "localhost".
+# En prod, SITE_ADDRESS=le vrai domaine (dans .env) : Caddy obtient un certificat Let's Encrypt tout seul.
+{$SITE_ADDRESS:localhost} {
+	encode gzip
+	request_body {
+		max_size 6MB
+	}
+	# Caddy remplace X-Forwarded-For par la VRAIE IP du client (une IP inventée par le client est ignorée)
+	reverse_proxy app:3000
+}

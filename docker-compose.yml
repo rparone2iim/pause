@@ -1,0 +1,64 @@
+# Lancement : docker compose up --build   →   https://localhost
+# (certificat auto-signé en local : accepter l'avertissement du navigateur)
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?à définir dans .env}
+      MIGRATOR_DB_PASSWORD: ${MIGRATOR_DB_PASSWORD:?à définir dans .env}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?à définir dans .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./db/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d pause"]
+      interval: 3s
+      retries: 20
+    # Pas de "ports:" → la base n'est PAS accessible depuis l'extérieur (pilier 9)
+
+  migrate:
+    build: { context: ., target: migrator }
+    environment:
+      MIGRATE_DATABASE_URL: postgresql://pause_migrator:${MIGRATOR_DB_PASSWORD}@db:5432/pause
+      DATABASE_URL: postgresql://pause_app:${APP_DB_PASSWORD}@db:5432/pause
+    depends_on:
+      db: { condition: service_healthy }
+
+  app:
+    build: { context: ., target: runner }
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://pause_app:${APP_DB_PASSWORD}@db:5432/pause
+      JWT_SECRET: ${JWT_SECRET:?à définir dans .env}
+      APP_ORIGIN: ${PUBLIC_ORIGIN:-https://localhost} # en prod : PUBLIC_ORIGIN=https://<ton-domaine> dans .env
+      UPLOAD_DIR: /app/uploads
+      TRUST_PROXY: "true" # Caddy est devant : on peut lire la vraie IP client
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-} # facultatif : vide = assistant en mode local (sans IA)
+    volumes:
+      - uploads:/app/uploads
+    read_only: true # système de fichiers en lecture seule…
+    tmpfs: [/tmp, /app/.next/cache] # …sauf ces dossiers temporaires et le volume des photos
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    # Pas de "ports:" non plus : seul Caddy est exposé
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost} # en prod : le domaine → certificat Let's Encrypt automatique
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [app]
+
+volumes:
+  db-data:
+  uploads:
+  caddy-data:

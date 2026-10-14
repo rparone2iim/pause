@@ -1,0 +1,165 @@
+# CI/CD Pause
+#  - À chaque push et pull request : tests (typecheck, audit, build, 27 tests de sécurité) + build des images Docker.
+#  - Sur main uniquement, si tout est vert : déploiement sur la VM Google Cloud.
+# Aucune clé Google n'est stockée dans GitHub : authentification par Workload Identity Federation
+# (voir infra/gcp/setup-cicd.sh).
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Tests (typecheck, audit, build, sécurité)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 3s
+          --health-retries 20
+    env:
+      # Valeurs de test uniquement (base jetable créée pour ce job)
+      DATABASE_URL: postgresql://pause_app:ci-app-pw@localhost:5432/pause
+      MIGRATE_DATABASE_URL: postgresql://pause_migrator:ci-migrator-pw@localhost:5432/pause
+      JWT_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
+      APP_ORIGIN: http://localhost:3000
+      UPLOAD_DIR: ${{ github.workspace }}/uploads
+      TRUST_PROXY: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Dépendances (npm ci, lockfile exact)
+        run: npm ci
+
+      - name: Audit des dépendances (pilier 5)
+        run: npm run audit
+
+      - name: Build Next.js
+        run: npm run build
+
+      - name: Vérification TypeScript
+        run: npm run typecheck
+
+      - name: Base de test (2 rôles Postgres, migrations, seed)
+        env:
+          PGHOST: localhost
+          PGPASSWORD: postgres
+          POSTGRES_USER: postgres
+          MIGRATOR_DB_PASSWORD: ci-migrator-pw
+          APP_DB_PASSWORD: ci-app-pw
+        run: |
+          sh db/init.sh
+          npm run db:migrate
+          npm run db:seed
+
+      - name: Démarrer l'app (build de production)
+        run: |
+          cp -r .next/static .next/standalone/.next/static
+          cp -r public .next/standalone/public
+          mkdir -p "$UPLOAD_DIR"
+          NODE_ENV=production PORT=3000 HOSTNAME=127.0.0.1 nohup node .next/standalone/server.js > app.log 2>&1 &
+          for _ in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3000/login && exit 0; sleep 1; done
+          cat app.log; exit 1
+
+      - name: Tests de sécurité (pilier 10)
+        run: npm run security:test
+
+      - name: Logs de l'app (en cas d'échec)
+        if: failure()
+        run: cat app.log || true
+
+  docker:
+    name: Build des images Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker-compose.yml valide
+        env:
+          POSTGRES_PASSWORD: x
+          MIGRATOR_DB_PASSWORD: x
+          APP_DB_PASSWORD: x
+          JWT_SECRET: x
+        run: docker compose config --quiet
+
+      - name: Build app + migrator
+        run: |
+          docker build --target runner -t pause-app:ci .
+          docker build --target migrator -t pause-migrate:ci .
+
+      - name: L'image tourne en non-root (pilier 9)
+        run: test "$(docker run --rm --entrypoint id pause-app:ci -u)" != "0"
+
+  deploy:
+    name: Déploiement Google Cloud
+    needs: [test, docker]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: production
+      url: https://34-155-60-223.sslip.io
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false # on ne coupe jamais un déploiement en cours
+    permissions:
+      contents: read
+      id-token: write # jeton OIDC pour Workload Identity Federation
+    env:
+      PROJECT: pause-demo-3zbux5
+      ZONE: europe-west9-b
+      VM: pause-vm
+      SITE: https://34-155-60-223.sslip.io
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Connexion à Google Cloud (sans clé)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Envoyer le code sur la VM (tunnel IAP)
+        run: |
+          git archive --format=tar.gz -o /tmp/pause.tgz HEAD
+          gcloud compute scp /tmp/pause.tgz scripts/remote-deploy.sh "$VM:/tmp/" \
+            --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet
+
+      - name: Rebuild + redémarrage
+        run: |
+          gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
+            --command "bash /tmp/remote-deploy.sh /tmp/pause.tgz ${GITHUB_SHA::7}"
+
+      - name: Vérifier le site en ligne
+        run: |
+          for _ in $(seq 1 20); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' "$SITE/login")" = "200" ] && break; sleep 3
+          done
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$SITE/login")" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$SITE/api/me")" = "401"
+          curl -sI "$SITE/" | grep -qi '^strict-transport-security'
+          echo "✔ $SITE répond (HTTPS, API protégée, HSTS)"
