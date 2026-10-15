@@ -1,6 +1,6 @@
 # CI/CD Pause
 #  - À chaque push et pull request : tests (typecheck, audit, build, 27 tests de sécurité) + build des images Docker.
-#  - Sur main uniquement, si tout est vert : déploiement sur la VM Google Cloud.
+#  - Sur main uniquement, si tout est vert : déploiement sur Google Cloud Run.
 # Aucune clé Google n'est stockée dans GitHub : authentification par Workload Identity Federation
 # (voir infra/gcp/setup-cicd.sh).
 name: CI/CD
@@ -113,14 +113,14 @@ jobs:
         run: test "$(docker run --rm --entrypoint id pause-app:ci -u)" != "0"
 
   deploy:
-    name: Déploiement Google Cloud
+    name: Déploiement Google Cloud Run
     needs: [test, docker]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     environment:
       name: production
-      url: https://34-155-60-223.sslip.io
+      url: https://pause-572691549135.europe-west9.run.app
     concurrency:
       group: deploy-production
       cancel-in-progress: false # on ne coupe jamais un déploiement en cours
@@ -129,9 +129,9 @@ jobs:
       id-token: write # jeton OIDC pour Workload Identity Federation
     env:
       PROJECT: pause-demo-3zbux5
-      ZONE: europe-west9-b
-      VM: pause-vm
-      SITE: https://34-155-60-223.sslip.io
+      REGION: europe-west9
+      IMAGES: europe-west9-docker.pkg.dev/pause-demo-3zbux5/pause
+      SITE: https://pause-572691549135.europe-west9.run.app
     steps:
       - uses: actions/checkout@v7
 
@@ -145,13 +145,27 @@ jobs:
         with:
           skip_install: true # gcloud est déjà sur le runner : pas de téléchargement
 
-      - name: Envoi du code + rebuild + redémarrage (SSH par tunnel IAP)
-        # Une seule connexion : l'archive passe par l'entrée standard, remote-deploy.sh est lu dans l'archive.
-        # Clé SSH temporaire (1 h) : rien ne reste autorisé sur la VM après le déploiement.
+      - name: Build + envoi des images (app + migrations) dans Artifact Registry
         run: |
-          git archive --format=tar.gz HEAD | gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" \
-            --tunnel-through-iap --quiet --ssh-key-expire-after=1h \
-            --command "cat > /tmp/pause.tgz && tar -xzOf /tmp/pause.tgz scripts/remote-deploy.sh | bash -s -- /tmp/pause.tgz ${GITHUB_SHA::7}"
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker build --target runner -t "$IMAGES/app:${GITHUB_SHA::7}" .
+          docker build --target migrator -t "$IMAGES/migrate:${GITHUB_SHA::7}" .
+          docker push "$IMAGES/app:${GITHUB_SHA::7}"
+          docker push "$IMAGES/migrate:${GITHUB_SHA::7}"
+
+      - name: Migrations + seed sur Cloud SQL (job Cloud Run, AVANT la nouvelle version)
+        # Compte pause-migrator : seul à connaître le mot de passe du rôle propriétaire du schéma.
+        run: |
+          gcloud run jobs deploy pause-migrate --image "$IMAGES/migrate:${GITHUB_SHA::7}" \
+            --region "$REGION" --project "$PROJECT" --quiet \
+            --service-account "pause-migrator@$PROJECT.iam.gserviceaccount.com" \
+            --set-cloudsql-instances "$PROJECT:$REGION:pause-db" \
+            --set-secrets MIGRATE_DATABASE_URL=pause-migrate-database-url:latest,DATABASE_URL=pause-database-url:latest \
+            --max-retries 0 --task-timeout 10m --execute-now --wait
+
+      - name: Déploiement de la nouvelle version sur Cloud Run
+        # Seule l'image change : variables, secrets, base et photos restent ceux du service (infra/gcp/setup-cloudrun.sh)
+        run: gcloud run deploy pause --image "$IMAGES/app:${GITHUB_SHA::7}" --region "$REGION" --project "$PROJECT" --quiet
 
       - name: Vérifier le site en ligne
         run: |

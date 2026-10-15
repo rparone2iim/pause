@@ -48,12 +48,21 @@ npm run dev                 # http://localhost:3000
 
 ### En ligne (Google Cloud)
 
-**https://34-155-60-223.sslip.io**. C'est une VM Compute Engine `t2d-standard-1` (1 vCPU AMD, 4 Go) à Paris (projet `pause-demo-3zbux5`) qui fait tourner le même `docker-compose.yml`. Le certificat HTTPS est fourni par Let's Encrypt via Caddy. Le pare-feu n'ouvre que 80/443 au public, et SSH n'est accessible que depuis une IP autorisée ou via le tunnel IAP.
+**https://pause-572691549135.europe-west9.run.app**, sur Google Cloud à Paris (projet `pause-demo-3zbux5`, région `europe-west9`) :
 
-- **Mettre à jour le site :** il suffit de **pousser sur `main`**. La CI/CD décrite plus bas teste puis déploie toute seule. En secours seulement : `bash scripts/deploy-gcp.sh` (il faut `gcloud` connecté au compte du projet). Le `.env` de prod (secrets aléatoires) reste sur la VM, et la base et les photos sont conservées.
-- **IA :** Gemini via Vertex AI, **sans clé API**. La VM tourne avec le compte de service `pause-app`, qui n'a qu'un seul droit : `roles/aiplatform.user`. L'app demande un jeton temporaire au metadata server de Google Cloud. La mise en place est dans `infra/gcp/setup-vertex.sh`.
-- **Version en ligne :** `cat /opt/pause/.revision` sur la VM (hash du commit déployé).
-- **Logs :** `gcloud compute ssh pause-vm --zone europe-west9-b --project pause-demo-3zbux5 --command 'cd /opt/pause && sudo docker compose logs --tail 50 app'`
+| Brique | Service Google Cloud |
+|---|---|
+| App Next.js (image `runner` du `Dockerfile`, non-root) | **Cloud Run** `pause` (HTTPS fourni par Google) |
+| Migrations + seed (image `migrator`) | **Cloud Run job** `pause-migrate`, lancé par la CD avant chaque déploiement |
+| PostgreSQL 16 (rôles `pause_migrator` / `pause_app`) | **Cloud SQL** `pause-db`, sans réseau autorisé : accès seulement par le connecteur Cloud SQL (IAM) |
+| Photos | **Cloud Storage**, bucket privé monté dans le conteneur sur `/app/uploads` |
+| Secrets (URL de la base, `JWT_SECRET`) | **Secret Manager**, aucun secret dans l'image ni dans GitHub |
+
+- **Mettre à jour le site :** il suffit de **pousser sur `main`**. La CI/CD décrite plus bas teste puis déploie toute seule.
+- **IA :** Gemini via Vertex AI, **sans clé API**. Le service tourne avec le compte `pause-app` (Vertex AI, base, photos et ses 2 secrets, rien d'autre). L'app demande un jeton temporaire au metadata server de Google Cloud. Mise en place : `infra/gcp/setup-vertex.sh` et `infra/gcp/setup-cloudrun.sh`.
+- **Vraie IP client :** Cloud Run *ajoute* l'IP du client à la fin de `X-Forwarded-For` (ce qui est avant peut être inventé) → avec `TRUST_PROXY=true`, l'app lit la **dernière** valeur.
+- **Version en ligne :** `gcloud run services describe pause --region europe-west9 --format 'value(spec.template.spec.containers[0].image)'` (tag = hash du commit).
+- **Logs :** `gcloud run services logs read pause --region europe-west9 --limit 50`
 - **Tout supprimer après la soutenance :** `gcloud projects delete pause-demo-3zbux5`
 
 ### CI/CD (GitHub Actions)
@@ -64,10 +73,10 @@ Le fichier est `.github/workflows/ci-cd.yml`.
 |---|---|---|
 | Chaque push et PR | **Tests** | `npm ci`, `npm audit`, build, `typecheck`, Postgres jetable (2 rôles, migrations, seed), démarrage de l'app, **27 tests de sécurité** |
 | Chaque push et PR | **Docker** | `docker-compose.yml` valide, build des images app + migrator, vérification que l'app tourne en non-root |
-| Push sur `main`, si tout est vert | **Déploiement** | Connexion à Google Cloud **sans clé** (Workload Identity Federation), envoi du code par tunnel IAP, `scripts/remote-deploy.sh` sur la VM, puis vérification HTTPS, API protégée et HSTS |
+| Push sur `main`, si tout est vert | **Déploiement** | Connexion à Google Cloud **sans clé** (Workload Identity Federation), images poussées dans Artifact Registry, migrations sur Cloud SQL (job Cloud Run), nouvelle version sur Cloud Run, puis vérification HTTPS, API protégée et HSTS |
 
-- **Aucun secret dans GitHub.** GitHub prouve son identité à Google avec un jeton OIDC signé. Seul le dépôt `rparone2iim/pause` sur la branche `main` peut emprunter le compte de service `github-deploy`, qui n'a que les droits pour se connecter à la VM.
-- **Mise en place de Google Cloud :** `infra/gcp/setup-cicd.sh`, à lancer une seule fois. Il crée le compte de service, Workload Identity Federation et OS Login. Le script de premier démarrage de la VM est `infra/gcp/startup.sh`.
+- **Aucun secret dans GitHub.** GitHub prouve son identité à Google avec un jeton OIDC signé. Seul le dépôt `rparone2iim/pause` sur la branche `main` peut emprunter le compte de service `github-deploy`, qui n'a que les droits pour pousser les images et déployer sur Cloud Run.
+- **Mise en place de Google Cloud :** `infra/gcp/setup-cicd.sh` (compte de service et Workload Identity Federation) puis `infra/gcp/setup-cloudrun.sh` (droits Cloud Run, Cloud SQL, photos, secrets), à lancer une seule fois.
 - **Dependabot** (`.github/dependabot.yml`) ouvre chaque semaine des PR de mise à jour (npm, actions, images Docker). La CI les teste avant tout merge.
 - **Workflow conseillé :** une branche par fonctionnalité, puis une PR. La CI doit être verte, puis on merge sur `main`, ce qui déploie automatiquement.
 
