@@ -37,7 +37,7 @@ services:
       APP_ORIGIN: ${PUBLIC_ORIGIN:-https://localhost} # en prod : PUBLIC_ORIGIN=https://<ton-domaine> dans .env
       UPLOAD_DIR: /app/uploads
       TRUST_PROXY: "true" # Caddy est devant : on peut lire la vraie IP client
-      # IA : en prod sur Google Cloud, Gemini via Vertex AI SANS clé (identité de la VM).
+      # IA : en prod sur Cloud Run, Gemini via Vertex AI SANS clé (identité du service).
       # Ailleurs : GEMINI_API_KEY (facultatif). Rien du tout = assistant en mode local (sans IA).
       VERTEX_PROJECT: ${VERTEX_PROJECT:-}
       VERTEX_LOCATION: ${VERTEX_LOCATION:-global}

@@ -81,7 +81,7 @@ Le fichier est `.github/workflows/ci-cd.yml`.
 | Quand | Job | Ce qu'il fait |
 |---|---|---|
 | Chaque push et PR | **Tests** | `npm ci`, `npm audit`, ESLint, contrat OpenAPI (Spectral + routes codées = routes documentées), build, `typecheck`, **tests unitaires et de composants** (Vitest), Postgres jetable (2 rôles, migrations **montées → toutes annulées → remontées**), **tests d'intégration**, seed, démarrage de l'app, **27 + 74 tests d'attaque** |
-| Chaque push et PR | **SAST** | Semgrep (règles par défaut, TypeScript, Next.js) : bloque sur le moindre résultat |
+| Chaque push et PR | **SAST** | Semgrep (règles par défaut, TypeScript, Next.js, Terraform) : bloque sur le moindre résultat, et une PR ne peut pas être mergée sans lui |
 | Chaque push et PR | **Terraform** | `terraform fmt -check` + `validate` (image officielle, version figée) |
 | Chaque push et PR | **Docker** | `docker-compose.yml` valide, build des images app + migrator, l'app tourne en non-root, **scan Trivy** de l'image (bloque sur une faille critique corrigeable) |
 | Push sur `main`, si tout est vert | **Déploiement** | Connexion à Google Cloud **sans clé** (Workload Identity Federation), images poussées dans Artifact Registry, migrations sur Cloud SQL (job Cloud Run), nouvelle version sur Cloud Run, puis vérification HTTPS, API protégée et HSTS |
@@ -90,7 +90,7 @@ Le fichier est `.github/workflows/ci-cd.yml`.
 - **Infrastructure as Code (`terraform/`) :** Cloud Run (service + job), Cloud SQL, bucket des photos, Secret Manager (les boîtes, pas leur contenu), Artifact Registry, comptes de service, Workload Identity Federation. `terraform plan` montre l'écart entre le code et la prod (aucun aujourd'hui). La prod existait avant : `imports.tf` la fait adopter au premier `apply`, sans rien recréer. L'état est dans un bucket GCS privé (commande de création en tête de `versions.tf`), jamais dans Git. La CD ne change que l'image ; tout le reste vient de Terraform.
 - **Dependabot** (`.github/dependabot.yml`) ouvre chaque semaine des PR de mise à jour (npm, actions, images Docker), avec 7 jours de délai après chaque publication (anti paquet piégé). La CI les teste avant tout merge.
 - **Actions GitHub figées sur un commit (SHA)**, pas sur un tag qu'un pirate pourrait déplacer.
-- **`main` est protégée :** pas de push direct (même pour l'admin), PR obligatoire, CI verte et branche à jour obligatoires, pas de force-push. Une branche par fonctionnalité → PR → CI verte → merge, ce qui déploie automatiquement.
+- **`main` est protégée :** pas de push direct (même pour l'admin), PR obligatoire, CI verte (Tests, Docker, Semgrep, Terraform) et branche à jour obligatoires, pas de force-push. Une branche par fonctionnalité → PR → CI verte → merge, ce qui déploie automatiquement.
 
 ---
 
@@ -106,7 +106,7 @@ Le fichier est `.github/workflows/ci-cd.yml`.
 | Photos | sharp (vérifie, redimensionne, convertit en WebP, efface les métadonnées) |
 | Logs | pino (JSON, secrets masqués) |
 | IA | Gemini (Flash-Lite, API REST) via **Vertex AI sans clé** en production, avec filtre hors sujet, quotas et repli local |
-| Carte | Leaflet + react-leaflet + tuiles OpenStreetMap (CARTO) |
+| Carte | Leaflet + react-leaflet + tuiles OpenStreetMap |
 | Design | Tailwind CSS v4 + shadcn/ui, icônes Lucide |
 | Déploiement | Google Cloud Run + Cloud SQL + Cloud Storage, CI/CD GitHub Actions |
 
