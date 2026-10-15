@@ -31,7 +31,8 @@ secret_access() { # secret_access <secret> <compte>
 
 echo "▶ APIs nécessaires"
 gcloud services enable run.googleapis.com sqladmin.googleapis.com artifactregistry.googleapis.com \
-  secretmanager.googleapis.com cloudbuild.googleapis.com --project "$PROJECT"
+  secretmanager.googleapis.com cloudbuild.googleapis.com places.googleapis.com --project "$PROJECT"
+# Google Places (cafés, bars, parcs) : appelé sans clé par le compte pause-app, comme Vertex AI, aucun droit en plus.
 
 echo "▶ App (pause-app) : base, photos, secrets"
 gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$APP_SA" \

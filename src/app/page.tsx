@@ -1,103 +1,283 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { useRequireAuth } from "@/components/AuthProvider";
-import { ExploreMap } from "@/components/maps";
-import { TypeBadge } from "@/components/ui";
-import { ChatPanel } from "@/components/ChatPanel";
-import { api, DEFAULT_CENTER, locate, photoUrl } from "@/lib/client";
-import { SPOT_TYPES, TYPE_LABELS, type SpotType } from "@/lib/constants";
-import type { SpotSummary } from "@/lib/types";
 
-const RADII = [300, 500, 800, 1500, 3000];
+import { ArrowDownUp, ArrowRight, Cigarette, CloudOff, Coffee, Footprints, Loader2, MapPin, Navigation, Plus, Radius, SearchX, Star, TreePine, Trees, Umbrella } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { SearchTrigger } from "@/components/SearchDialog";
+import { ExploreMap } from "@/components/maps";
+import { formatDistance, PlaceCard } from "@/components/PlaceCard";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { FILTER_LABELS, formatRadius, KIND_META, RADIUS_OPTIONS, SPOT_FILTERS } from "@/lib/constants";
+import { NamedIcon } from "@/lib/icons";
+import { useStore } from "@/lib/store";
+import type { Place, SpotFilter } from "@/lib/types";
+import { useRequireAuth } from "@/lib/use-require-auth";
+
+const FILTER_ICONS: Record<SpotFilter, React.ComponentType<{ className?: string }>> = {
+  smoke: Cigarette,
+  coffee: Coffee,
+  quiet: Trees,
+  shade: TreePine,
+  shelter: Umbrella,
+};
+
+type SortKey = "nearest" | "rating" | "open" | "quietness";
+const SORTS: { key: SortKey; label: string }[] = [
+  { key: "nearest", label: "Les plus proches" },
+  { key: "rating", label: "Les mieux notés" },
+  { key: "open", label: "Ouverts maintenant" },
+  { key: "quietness", label: "Les plus calmes" },
+];
 
 export default function ExplorePage() {
-  const { me } = useRequireAuth();
-  const [center, setCenter] = useState(DEFAULT_CENTER);
-  const [mapCenter, setMapCenter] = useState(DEFAULT_CENTER);
-  const [radius, setRadius] = useState(800);
-  const [types, setTypes] = useState<Set<SpotType>>(new Set());
-  const [spots, setSpots] = useState<SpotSummary[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const ready = useRequireAuth();
+  const { places, status, osmAvailable, refresh, weather, radius, setRadius, origin, setOrigin, locate, user } = useStore();
+  const [filters, setFilters] = useState<SpotFilter[]>([]);
+  const [sort, setSort] = useState<SortKey>("nearest");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const askedGps = useRef(false);
+  const filtersFromProfile = useRef(false);
 
-  // Préférences du profil = filtres par défaut
+  // The preferred break types of the profile are the default filters.
   useEffect(() => {
-    if (!me) return;
-    setRadius(me.radiusM);
-    setTypes(new Set(me.preferredTypes));
-  }, [me]);
+    if (!user || filtersFromProfile.current) return;
+    filtersFromProfile.current = true;
+    setFilters(user.preferredTypes);
+  }, [user]);
 
-  useEffect(() => { void locate().then((p) => { setCenter(p); setMapCenter(p); }); }, []);
+  // First visit: ask for the real position (falls back to the school if refused).
+  useEffect(() => {
+    if (!ready || askedGps.current || origin.source !== "default") return;
+    askedGps.current = true;
+    locate();
+  }, [ready, origin.source, locate]);
 
-  const load = useCallback(async () => {
-    if (!me) return;
-    setLoading(true);
-    try {
-      const q = new URLSearchParams({ lat: center.lat.toFixed(6), lng: center.lng.toFixed(6), radius: String(radius) });
-      setSpots((await api<{ spots: SpotSummary[] }>(`/api/spots?${q}`)).spots);
-    } finally { setLoading(false); }
-  }, [me, center, radius]);
-  useEffect(() => { void load(); }, [load]);
+  const counts = useMemo(() => {
+    const c = Object.fromEntries(SPOT_FILTERS.map((f) => [f, 0])) as Record<SpotFilter, number>;
+    places.forEach((p) => p.filters.forEach((f) => f !== "all" && (c[f] += 1)));
+    return c;
+  }, [places]);
 
-  const visible = useMemo(() => (types.size ? spots.filter((s) => types.has(s.type)) : spots), [spots, types]);
-  const toggle = (t: SpotType) => setTypes((prev) => { const n = new Set(prev); if (n.has(t)) n.delete(t); else n.add(t); return n; });
-  const movedAway = Math.abs(mapCenter.lat - center.lat) > 0.001 || Math.abs(mapCenter.lng - center.lng) > 0.001;
+  const visible = useMemo(() => {
+    const dist = (a: Place, b: Place) => (a.distanceM ?? 0) - (b.distanceM ?? 0);
+    const sorters: Record<SortKey, (a: Place, b: Place) => number> = {
+      nearest: dist,
+      rating: (a, b) => (b.rating ?? 0) - (a.rating ?? 0) || (b.ratingCount ?? 0) - (a.ratingCount ?? 0) || dist(a, b),
+      open: (a, b) => Number(b.openNow === true) - Number(a.openNow === true) || dist(a, b),
+      quietness: (a, b) => b.quiet - a.quiet || dist(a, b),
+    };
+    return places.filter((p) => filters.length === 0 || filters.some((f) => p.filters.includes(f))).sort(sorters[sort]);
+  }, [places, filters, sort]);
 
-  if (!me) return null;
-  return (
-    <main className="explore">
-      <section className="explore-list" aria-label="Spots à proximité">
-        <div className="row" style={{ justifyContent: "space-between" }}>
-          <h2>Pauses à proximité</h2>
-          <select className="input" style={{ width: "auto", minHeight: 32, padding: "4px 8px" }} value={radius} onChange={(e) => setRadius(Number(e.target.value))} aria-label="Rayon">
-            {RADII.map((r) => <option key={r} value={r}>{r < 1000 ? `${r} m` : `${r / 1000} km`} (~{Math.round(r / 80)} min)</option>)}
-          </select>
-        </div>
-        <div className="row">
-          <button className="chip" aria-pressed={types.size === 0} onClick={() => setTypes(new Set())}>Tous ({spots.length})</button>
-          {SPOT_TYPES.map((t) => (
-            <button key={t} className="chip" aria-pressed={types.has(t)} onClick={() => toggle(t)}>
-              {TYPE_LABELS[t].emoji} {TYPE_LABELS[t].label} ({spots.filter((s) => s.type === t).length})
-            </button>
+  useEffect(() => {
+    if (visible.length === 0) setSelectedId(null);
+    else if (!visible.some((p) => p.id === selectedId)) setSelectedId(visible[0].id);
+  }, [visible, selectedId]);
+
+  const select = (id: string, scroll = false) => {
+    setSelectedId(id);
+    if (scroll) cardRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+
+  if (!ready) {
+    return (
+      <div className="flex flex-col lg:flex-row w-full lg:h-[calc(100vh-4rem)]">
+        <div className="w-full lg:w-[400px] p-4 flex flex-col gap-2.5">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-[70px] rounded-2xl" />
           ))}
         </div>
-        {loading && <p className="muted">Recherche…</p>}
-        {!loading && visible.length === 0 && (
-          <div className="empty card">
-            <p>Aucun spot dans ce périmètre.</p>
-            <p className="small" style={{ margin: "8px 0 12px" }}>Agrandis le rayon, déplace la carte, ou ajoute le premier !</p>
-            <Link className="btn small" href="/spots/new">+ Ajouter un spot</Link>
-          </div>
-        )}
-        {visible.map((s) => (
-          <article key={s.id} className={`card spot-card ${selected === s.id ? "selected" : ""}`} onClick={() => setSelected(s.id)}>
-            <div className="thumb">
-              {s.cover ? <img src={photoUrl(s.cover)} alt="" loading="lazy" /> : TYPE_LABELS[s.type].emoji}
-            </div>
-            <div className="body">
-              <div className="row" style={{ justifyContent: "space-between", flexWrap: "nowrap" }}>
-                <h3 style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</h3>
-                <span className="pill-walk num">{s.walkMin} min</span>
-              </div>
-              <div className="row" style={{ gap: 6 }}>
-                <TypeBadge type={s.type} />
-                <span className="muted small num">{s.distanceM} m · {s.rating ? `★ ${s.rating} (${s.reviewCount})` : "pas encore noté"}{s.isFavorite ? " · ♥" : ""}</span>
-              </div>
-              <p className="desc">{s.description}</p>
-              <Link href={`/spots/${s.id}`} className="small" style={{ fontWeight: 600 }} onClick={(e) => e.stopPropagation()}>Voir la fiche →</Link>
-            </div>
-          </article>
-        ))}
-      </section>
-      <section className="explore-map" aria-label="Carte">
-        <ExploreMap center={center} radius={radius} spots={visible} selectedId={selected} onSelect={setSelected} onMove={setMapCenter} />
-        <div className="map-floating">
-          {movedAway && <button className="btn small" onClick={() => setCenter(mapCenter)}>Chercher dans cette zone</button>}
-          <button className="btn small secondary" onClick={() => void locate().then((p) => { setCenter(p); setMapCenter(p); })}>◎ Ma position</button>
+        <Skeleton className="flex-1 h-[45vh] lg:h-full rounded-none" />
+      </div>
+    );
+  }
+
+  const selected = visible.find((p) => p.id === selectedId);
+  const selectedCard = selected && (
+    <div key={selected.id} className="animate-pop flex items-center gap-3 w-72 rounded-3xl bg-primary text-primary-foreground p-2 shadow-2xl">
+      <span className="size-12 rounded-2xl bg-white/10 flex items-center justify-center shrink-0">
+        <NamedIcon name={KIND_META[selected.kind].icon} className="size-5 text-brand" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="font-heading font-semibold leading-snug truncate">{selected.name}</div>
+        <div className="flex items-center gap-1.5 text-xs opacity-70">
+          <Footprints className="size-3.5" />
+          {selected.walkMin} min · {formatDistance(selected.distanceM)}
+          {selected.rating != null && (
+            <>
+              <Star className="size-3.5 fill-brand text-brand ml-1" />
+              {selected.rating.toFixed(1).replace(".", ",")}
+            </>
+          )}
         </div>
-        <ChatPanel center={center} radius={radius} onPickSpot={(id) => { setTypes(new Set()); setSelected(id); }} />
+      </div>
+      <Button asChild size="icon-lg" className="rounded-full bg-brand text-brand-foreground hover:bg-brand/90 shrink-0 transition-transform hover:scale-105">
+        <Link href={`/spots/${selected.id}`} aria-label={`Ouvrir ${selected.name}`}>
+          <ArrowRight />
+        </Link>
+      </Button>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col lg:flex-row w-full lg:h-[calc(100vh-4rem)] lg:overflow-hidden">
+      <h1 className="sr-only">Spots de pause autour de toi</h1>
+      <aside className="order-2 lg:order-1 w-full lg:w-[400px] shrink-0 flex flex-col lg:h-full lg:border-r bg-background">
+        <div className="p-4 pb-3 flex flex-col gap-3">
+          <SearchTrigger className="md:hidden" />
+          <div className="flex items-center gap-2">
+            <ToggleGroup
+              type="multiple"
+              value={filters}
+              onValueChange={(v) => setFilters(v as SpotFilter[])}
+              className="flex-1 justify-start gap-1.5 overflow-x-auto no-scrollbar [mask-image:linear-gradient(to_right,black_85%,transparent)]"
+              aria-label="Filtrer par type"
+            >
+              {SPOT_FILTERS.filter((f) => counts[f] > 0 || filters.includes(f)).map((f) => {
+                const Icon = FILTER_ICONS[f];
+                return (
+                  <ToggleGroupItem
+                    key={f}
+                    value={f}
+                    size="sm"
+                    className="shrink-0 rounded-full border bg-card px-3 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-primary transition-all active:scale-95"
+                  >
+                    <Icon className="size-3.5" />
+                    {FILTER_LABELS[f]}
+                  </ToggleGroupItem>
+                );
+              })}
+            </ToggleGroup>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="rounded-full shrink-0 shadow-none bg-card hover:bg-muted gap-1 px-2.5" aria-label="Rayon">
+                  <Radius /> {formatRadius(radius)}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuLabel>Rayon</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={String(radius)} onValueChange={(v) => setRadius(Number(v))}>
+                  {RADIUS_OPTIONS.map((r) => (
+                    <DropdownMenuRadioItem key={r} value={String(r)}>
+                      {formatRadius(r)} · {Math.round(r / 80)} min
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon-sm" className="rounded-full shrink-0 shadow-none bg-card hover:bg-muted" aria-label="Trier">
+                  <ArrowDownUp />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuLabel>Trier par</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={sort} onValueChange={(v) => setSort(v as SortKey)}>
+                  {SORTS.map((s) => (
+                    <DropdownMenuRadioItem key={s.key} value={s.key}>
+                      {s.label}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          {status === "ready" && !osmAvailable && (
+            <div className="animate-fade-in flex items-center gap-2 rounded-2xl bg-muted px-3 py-2 text-xs text-muted-foreground">
+              <CloudOff className="size-4 shrink-0" />
+              <span className="flex-1">OpenStreetMap ne répond pas : seuls les spots de la communauté sont affichés.</span>
+              <button type="button" onClick={refresh} className="font-medium text-foreground underline underline-offset-4">
+                Réessayer
+              </button>
+            </div>
+          )}
+          {filters.length > 0 && (
+            <button type="button" onClick={() => setFilters([])} className="self-start text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground">
+              Tout afficher
+            </button>
+          )}
+        </div>
+
+        <div className="flex-1 lg:overflow-y-auto px-4 pt-1 pb-4 flex flex-col gap-2.5" aria-busy={status === "loading"}>
+          <h2 className="sr-only">Liste des spots, du plus proche au plus loin</h2>
+          {status === "loading" && places.length === 0 && Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-[70px] shrink-0 rounded-2xl" />)}
+
+          {status === "error" && places.length === 0 && (
+            <div className="animate-fade-up flex flex-col items-center text-center gap-3 py-12 text-muted-foreground">
+              <CloudOff className="size-8" />
+              <p className="text-sm">Impossible de charger les spots.</p>
+              <Button onClick={refresh} className="rounded-full">
+                Réessayer
+              </Button>
+            </div>
+          )}
+
+          {visible.map((p, i) => (
+            <PlaceCard
+              key={p.id}
+              index={i}
+              ref={(el) => {
+                cardRefs.current[p.id] = el;
+              }}
+              place={p}
+              selected={p.id === selectedId}
+              onSelect={() => select(p.id)}
+            />
+          ))}
+
+          {status === "ready" && visible.length === 0 && (
+            <div className="animate-fade-up flex flex-col items-center text-center gap-3 py-12 text-muted-foreground">
+              <SearchX className="size-8" />
+              <p className="text-sm">Rien par ici pour l&apos;instant.</p>
+              <Button asChild className="rounded-full">
+                <Link href="/spots/new">
+                  <Plus /> Ajouter un spot
+                </Link>
+              </Button>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <section className="order-1 lg:order-2 flex-none lg:flex-1 relative h-[45vh] min-h-[320px] lg:h-full overflow-hidden">
+        <ExploreMap
+          center={origin}
+          radiusM={radius}
+          places={visible}
+          selectedId={selectedId}
+          onSelect={(id) => select(id, true)}
+          onLocate={locate}
+          onSearchArea={(c) => setOrigin({ ...c, label: "Zone de la carte", source: "search" })}
+          selectedCard={selectedCard}
+        >
+          <div className="absolute top-3 left-3 right-3 flex pointer-events-none z-[1000]">
+            <div className="animate-fade-in pointer-events-auto flex items-center gap-2 rounded-full bg-background/90 backdrop-blur-md border px-3.5 py-2 shadow-lg min-w-0 text-sm">
+              {origin.source === "gps" ? <Navigation className="size-3.5 text-brand fill-brand shrink-0" /> : <MapPin className="size-3.5 text-brand shrink-0" />}
+              <span className="font-medium truncate">{origin.label}</span>
+              {weather && (
+                <span className="flex items-center gap-1 pl-2 border-l text-muted-foreground shrink-0">
+                  <NamedIcon name={weather.icon} className="size-4" />
+                  {weather.temperature}°
+                </span>
+              )}
+              {status === "loading" && <Loader2 className="size-3.5 animate-spin text-muted-foreground shrink-0" />}
+            </div>
+          </div>
+
+        </ExploreMap>
       </section>
-    </main>
+    </div>
   );
 }

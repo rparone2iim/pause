@@ -1,70 +1,175 @@
-// Pause — modèle de données (volontairement minimal : 5 tables)
 import { sql } from "drizzle-orm";
-import {
-  pgTable, pgEnum, uuid, text, integer, doublePrecision, timestamp,
-  index, uniqueIndex, primaryKey, check,
-} from "drizzle-orm/pg-core";
+import { type AnyPgColumn, boolean, check, doublePrecision, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 
-import { SPOT_TYPES, TAGS } from "../lib/constants";
+/*
+ * Pause — the 5 tables (+ sessions: refresh tokens and server-side logout).
+ * Every id is a random UUID, so nobody can guess another user's or spot's id.
+ * CHECK constraints repeat the key validation rules inside Postgres: even if the
+ * code's validation were bypassed, the database refuses an out-of-range value.
+ */
 
-export const spotType = pgEnum("spot_type", SPOT_TYPES);
-export const tag = pgEnum("tag", TAGS);
+export const SPOT_TYPES = ["cafe", "bar", "terrace", "park", "bench", "smoking", "shelter"] as const;
+export const FILTER_KEYS = ["smoke", "coffee", "quiet", "shade", "shelter"] as const;
+export type SpotType = (typeof SPOT_TYPES)[number];
 
-export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(), // UUID v4 : non devinable (≠ 1, 2, 3…)
-  email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(), // bcrypt, jamais le mot de passe
-  displayName: text("display_name").notNull(),
-  preferredTypes: spotType("preferred_types").array().notNull().default(sql`'{}'`),
-  radiusM: integer("radius_m").notNull().default(800),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
+const updatedAt = () =>
+  timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date());
 
-export const spots = pgTable("spots", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  name: text("name").notNull(),
-  description: text("description").notNull(),
-  accessTip: text("access_tip"),
-  type: spotType("type").notNull(),
-  tags: tag("tags").array().notNull().default(sql`'{}'`),
-  lat: doublePrecision("lat").notNull(),
-  lng: doublePrecision("lng").notNull(),
-  authorId: uuid("author_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [
-  index("spots_lat_lng_idx").on(t.lat, t.lng),
-  check("spots_lat_ck", sql`${t.lat} BETWEEN -90 AND 90`),
-  check("spots_lng_ck", sql`${t.lng} BETWEEN -180 AND 180`),
-]);
+const inList = (values: readonly string[]) => sql.raw(values.map((v) => `'${v}'`).join(", "));
+const optional1to5 = (col: AnyPgColumn) => sql`${col} IS NULL OR ${col} BETWEEN 1 AND 5`;
 
-export const photos = pgTable("photos", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  filename: text("filename").notNull().unique(), // UUID aléatoire + .webp, jamais le nom envoyé
-  spotId: uuid("spot_id").notNull().references(() => spots.id, { onDelete: "cascade" }),
-  uploaderId: uuid("uploader_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull().unique(),
+    /** bcrypt hash — the password itself is never stored. */
+    passwordHash: text("password_hash").notNull(),
+    displayName: text("display_name").notNull(),
+    /** Break types shown by default on the map (filter keys). */
+    preferredTypes: text("preferred_types").array().notNull().default(sql`ARRAY['smoke', 'coffee']::text[]`),
+    /** Default search radius on the map, in meters. */
+    radiusM: integer("radius_m").notNull().default(800),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("users_email_lowercase", sql`${t.email} = lower(${t.email})`),
+    check("users_display_name_length", sql`char_length(${t.displayName}) BETWEEN 2 AND 40`),
+    check("users_radius_m_range", sql`${t.radiusM} BETWEEN 300 AND 3000`),
+    check("users_preferred_types_valid", sql`${t.preferredTypes} <@ ARRAY[${inList(FILTER_KEYS)}]::text[]`),
+  ],
+);
 
-export const reviews = pgTable("reviews", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  spotId: uuid("spot_id").notNull().references(() => spots.id, { onDelete: "cascade" }),
-  authorId: uuid("author_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  rating: integer("rating").notNull(), // note globale
-  calm: integer("calm").notNull(),
-  clean: integer("clean").notNull(),
-  seating: integer("seating").notNull(),
-  comment: text("comment"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [
-  uniqueIndex("reviews_spot_author_uq").on(t.spotId, t.authorId), // 1 avis / personne / spot
-  // Double sécurité : même si la validation Zod sautait, la BDD refuse une note hors 1-5
-  check("reviews_notes_ck", sql`${t.rating} BETWEEN 1 AND 5 AND ${t.calm} BETWEEN 1 AND 5 AND ${t.clean} BETWEEN 1 AND 5 AND ${t.seating} BETWEEN 1 AND 5`),
-]);
+/**
+ * A break spot. Community spots have an author; OpenStreetMap places get a row (with `osm_ref`, no author)
+ * the first time someone reviews, photographs or bookmarks them, so every review/photo/favorite points to a real spot.
+ */
+export const spots = pgTable(
+  "spots",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    authorId: uuid("author_id").references(() => users.id, { onDelete: "cascade" }),
+    osmRef: text("osm_ref").unique(),
+    name: text("name").notNull(),
+    type: text("type", { enum: SPOT_TYPES }).notNull(),
+    description: text("description"),
+    accessTip: text("access_tip"),
+    tags: jsonb("tags").$type<{ icon: string; label: string }[]>().notNull().default([]),
+    filters: text("filters").array().notNull().default(sql`ARRAY[]::text[]`),
+    quiet: integer("quiet").notNull().default(3),
+    address: text("address"),
+    lat: doublePrecision("lat").notNull(),
+    lng: doublePrecision("lng").notNull(),
+    isPrivate: boolean("is_private").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("spots_lat_lng_idx").on(t.lat, t.lng),
+    index("spots_author_idx").on(t.authorId),
+    check("spots_lat_range", sql`${t.lat} BETWEEN -90 AND 90`),
+    check("spots_lng_range", sql`${t.lng} BETWEEN -180 AND 180`),
+    check("spots_type_valid", sql`${t.type} IN (${inList(SPOT_TYPES)})`),
+    check("spots_filters_valid", sql`${t.filters} <@ ARRAY[${inList(FILTER_KEYS)}]::text[]`),
+    check("spots_quiet_range", sql`${t.quiet} BETWEEN 1 AND 5`),
+    check("spots_name_length", sql`char_length(${t.name}) BETWEEN 1 AND 120`),
+    check("spots_author_xor_osm", sql`(${t.authorId} IS NULL) <> (${t.osmRef} IS NULL)`),
+  ],
+);
 
-export const favorites = pgTable("favorites", {
-  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  spotId: uuid("spot_id").notNull().references(() => spots.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [primaryKey({ columns: [t.userId, t.spotId] })]);
+export const photos = pgTable(
+  "photos",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** Random UUID generated by the server + ".webp" — never the uploaded file name. */
+    filename: text("filename").notNull().unique(),
+    spotId: uuid("spot_id")
+      .notNull()
+      .references(() => spots.id, { onDelete: "cascade" }),
+    uploaderId: uuid("uploader_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("photos_spot_idx").on(t.spotId, t.createdAt),
+    check("photos_filename_format", sql`${t.filename} ~ '^[0-9a-f-]{36}\\.webp$'`),
+  ],
+);
+
+export const reviews = pgTable(
+  "reviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spotId: uuid("spot_id")
+      .notNull()
+      .references(() => spots.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    rating: integer("rating").notNull(),
+    calm: integer("calm"),
+    clean: integer("clean"),
+    seating: integer("seating"),
+    comment: text("comment").notNull().default(""),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // One review per person and per spot: rating again updates it.
+    unique("reviews_spot_author_unique").on(t.spotId, t.authorId),
+    index("reviews_spot_idx").on(t.spotId, t.updatedAt),
+    check("reviews_rating_range", sql`${t.rating} BETWEEN 1 AND 5`),
+    check("reviews_calm_range", optional1to5(t.calm)),
+    check("reviews_clean_range", optional1to5(t.clean)),
+    check("reviews_seating_range", optional1to5(t.seating)),
+    check("reviews_comment_length", sql`char_length(${t.comment}) <= 500`),
+  ],
+);
+
+export const favorites = pgTable(
+  "favorites",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    spotId: uuid("spot_id")
+      .notNull()
+      .references(() => spots.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.spotId] })],
+);
+
+/**
+ * One row per login (device). The refresh token itself is never stored: only its SHA-256.
+ * Each refresh rotates it; the previous hash is kept to spot a stolen token being replayed.
+ * Access tokens carry the session id (`sid`): revoking the session (logout, replay) kills them at once.
+ */
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    refreshHash: text("refresh_hash").notNull().unique(),
+    previousHash: text("previous_hash"),
+    rotatedAt: timestamp("rotated_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("sessions_user_idx").on(t.userId), index("sessions_previous_hash_idx").on(t.previousHash)],
+);
+
+export type User = typeof users.$inferSelect;
+export type Spot = typeof spots.$inferSelect;
+export type NewSpot = typeof spots.$inferInsert;
+export type Photo = typeof photos.$inferSelect;
+export type Review = typeof reviews.$inferSelect;

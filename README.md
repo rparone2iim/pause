@@ -1,8 +1,12 @@
 # ⏸ Pause
 
-Pause trouve autour de toi les meilleurs spots de pause : coin fumeur, café, banc calme ou abri. Chaque spot a des photos, des notes et un « comment y aller ».
+Web app qui affiche sur une carte les meilleurs spots de pause autour de toi : coin fumeur, café, banc calme ou abri.
+Tu crées un compte, tu te connectes, et tu vois les spots dans un rayon de 300 m à 3 km, triés du plus proche au plus loin.
+Chaque spot a des photos, des tags, une description, un « comment y aller » et des avis. Tout le monde peut ajouter un spot.
 
-**Stack :** Next.js 15 (front + API) · PostgreSQL · Drizzle ORM · Zod · JWT (jose) · bcrypt · Leaflet/OpenStreetMap · Docker + Caddy
+Sécurité : voir **[SECURITY.md](SECURITY.md)** (10 piliers + réponses au jury). `npm run security:test` lance 73 attaques réelles (et `npm run security:test:alain` 27 de plus), toutes bloquées.
+
+**En ligne : https://pause-572691549135.europe-west9.run.app** (Google Cloud Run, déployé automatiquement à chaque merge sur `main`).
 
 ---
 
@@ -29,11 +33,11 @@ PGHOST=localhost PGPASSWORD=postgres POSTGRES_USER=postgres \
   MIGRATOR_DB_PASSWORD=change-moi-aussi APP_DB_PASSWORD=change-moi-encore sh db/init.sh
 set -a && . ./.env && set +a
 npm run db:migrate          # crée les tables
-npm run db:seed             # données de démo (La Défense)
+npm run db:seed             # données de démo (autour de l'école et à La Défense)
 npm run dev                 # http://localhost:3000
 ```
 
-**Assistant IA (Gemini) :** sans configuration, il donne des réponses automatiques (mode local). En prod, il utilise Gemini via **Vertex AI, sans aucune clé**. Pour avoir les vraies réponses Gemini en dev, il faut un accès au projet Google Cloud. Mets `VERTEX_PROJECT=pause-demo-3zbux5` dans `.env`, puis lance avec `VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token) npm run dev` (le jeton dure 1 h). Autre solution : une clé AI Studio dans `GEMINI_API_KEY`. Le modèle par défaut est `gemini-3.5-flash-lite`.
+**« Demander à l'IA » (Gemini) :** sans configuration, le dialogue répond avec son repli local (mots-clés + conseils de détente). En prod, il utilise Gemini via **Vertex AI, sans aucune clé**. Pour avoir les vraies réponses Gemini en dev, il faut un accès au projet Google Cloud. Mets `VERTEX_PROJECT=pause-demo-3zbux5` dans `.env`, puis lance avec `VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token) npm run dev` (le jeton dure 1 h). Autre solution : une clé AI Studio dans `GEMINI_API_KEY`. Le modèle par défaut est `gemini-3.5-flash-lite`.
 
 **Comptes de démo :** `demo@pause.dev` et `alex@pause.dev`, mot de passe `DemoPause2026`.
 
@@ -41,8 +45,10 @@ npm run dev                 # http://localhost:3000
 
 | Commande | Rôle |
 |---|---|
-| `npm run security:test` | 27 tests d'attaque contre l'API (l'app doit tourner). En Docker : `BASE_URL=https://localhost INSECURE=1 npm run security:test` |
-| `npm run audit` | Audit des dépendances |
+| `npm run security:test` | Les 73 attaques contre l'API (l'app doit tourner). Contre le site en ligne : `BASE_URL=https://pause-572691549135.europe-west9.run.app APP_ORIGIN=https://pause-572691549135.europe-west9.run.app npm run security:test` |
+| `npm run security:test:alain` | Les tests d'attaque historiques d'alain (`scripts/security-test.sh`), adaptés à `/api/v1` |
+| `npm run audit` | Audit des dépendances de production |
+| `npm run lint` | ESLint (aussi lancé par `npm run build`) |
 | `npm run typecheck` | Vérification TypeScript |
 | `npm run db:generate` | Génère une migration SQL après une modification de `src/db/schema.ts` |
 
@@ -71,54 +77,112 @@ Le fichier est `.github/workflows/ci-cd.yml`.
 
 | Quand | Job | Ce qu'il fait |
 |---|---|---|
-| Chaque push et PR | **Tests** | `npm ci`, `npm audit`, build, `typecheck`, Postgres jetable (2 rôles, migrations, seed), démarrage de l'app, **27 tests de sécurité** |
-| Chaque push et PR | **Docker** | `docker-compose.yml` valide, build des images app + migrator, vérification que l'app tourne en non-root |
+| Chaque push et PR | **Tests** | `npm ci`, `npm audit`, ESLint, contrat OpenAPI (Spectral + routes codées = routes documentées), build, `typecheck`, Postgres jetable (2 rôles, migrations, seed), démarrage de l'app, **27 + 73 tests d'attaque** |
+| Chaque push et PR | **SAST** | Semgrep (règles par défaut, TypeScript, Next.js) : bloque sur le moindre résultat |
+| Chaque push et PR | **Docker** | `docker-compose.yml` valide, build des images app + migrator, l'app tourne en non-root, **scan Trivy** de l'image (bloque sur une faille critique corrigeable) |
 | Push sur `main`, si tout est vert | **Déploiement** | Connexion à Google Cloud **sans clé** (Workload Identity Federation), images poussées dans Artifact Registry, migrations sur Cloud SQL (job Cloud Run), nouvelle version sur Cloud Run, puis vérification HTTPS, API protégée et HSTS |
 
 - **Aucun secret dans GitHub.** GitHub prouve son identité à Google avec un jeton OIDC signé. Seul le dépôt `rparone2iim/pause` sur la branche `main` peut emprunter le compte de service `github-deploy`, qui n'a que les droits pour pousser les images et déployer sur Cloud Run.
 - **Mise en place de Google Cloud :** `infra/gcp/setup-cicd.sh` (compte de service et Workload Identity Federation) puis `infra/gcp/setup-cloudrun.sh` (droits Cloud Run, Cloud SQL, photos, secrets), à lancer une seule fois.
-- **Dependabot** (`.github/dependabot.yml`) ouvre chaque semaine des PR de mise à jour (npm, actions, images Docker). La CI les teste avant tout merge.
-- **Workflow conseillé :** une branche par fonctionnalité, puis une PR. La CI doit être verte, puis on merge sur `main`, ce qui déploie automatiquement.
+- **Dependabot** (`.github/dependabot.yml`) ouvre chaque semaine des PR de mise à jour (npm, actions, images Docker), avec 7 jours de délai après chaque publication (anti paquet piégé). La CI les teste avant tout merge.
+- **Actions GitHub figées sur un commit (SHA)**, pas sur un tag qu'un pirate pourrait déplacer.
+- **`main` est protégée :** pas de push direct (même pour l'admin), PR obligatoire, CI verte et branche à jour obligatoires, pas de force-push. Une branche par fonctionnalité → PR → CI verte → merge, ce qui déploie automatiquement.
 
 ---
 
-## Structure
+## La stack
+
+| Brique | Outil |
+|---|---|
+| Front + API | Next.js 15 (React 19, TypeScript) — les `route.ts` de `src/app/api/v1/` deviennent des URLs d'API (toutes versionnées en `/api/v1/…`) |
+| Base de données | PostgreSQL 16 (Docker) / 17 (Homebrew) |
+| Accès à la base | Drizzle ORM (requêtes paramétrées) |
+| Validation | Zod |
+| Authentification | jose (JWT HS256, access token 15 min) + refresh token rotatif en cookie HttpOnly + bcryptjs (coût 12) |
+| Photos | sharp (vérifie, redimensionne, convertit en WebP, efface les métadonnées) |
+| Logs | pino (JSON, secrets masqués) |
+| IA | Gemini (Flash-Lite, API REST) via **Vertex AI sans clé** en production, avec filtre hors sujet, quotas et repli local |
+| Carte | Leaflet + react-leaflet + tuiles OpenStreetMap (CARTO) |
+| Design | Tailwind CSS v4 + shadcn/ui, icônes Lucide |
+| Déploiement | Google Cloud Run + Cloud SQL + Cloud Storage, CI/CD GitHub Actions |
+
+Toutes les versions sont figées dans `package.json`.
+
+## L'organisation du code
 
 ```
+db/
+├─ init.sh              ← crée la base et les rôles pause_migrator / pause_app
+├─ migrations/          ← SQL généré par drizzle-kit
+└─ seed.ts              ← données de démo
 src/
-  app/
-    api/                 ← L'API (Route Handlers Next.js)
-      auth/login|register
-      me/                  profil + favoris
-      spots/               liste par rayon, création
-      spots/[id]/          fiche, modif, suppression (auteur seulement)
-      spots/[id]/reviews   mon avis (créer / mettre à jour)
-      spots/[id]/photos    upload
-      spots/[id]/favorite  ajouter / retirer
-      photos/[name]        servir / supprimer une photo
-      assistant/           chatbot : recommandations + conseils détente
-    page.tsx             ← Carte + liste
-    spots/[id]/          ← Fiche spot
-    spots/new/           ← Ajouter un spot
-    profile/             ← Profil, préférences, favoris
-    login/ register/
-  lib/                   ← TOUTE la sécurité est ici
-    auth.ts              JWT + bcrypt + requireUser
-    http.ts              wrapper route() : erreurs, logs, rate limit global, lecture JSON
-    validation.ts        schémas Zod
-    rateLimit.ts         rate limiting
-    upload.ts            traitement sécurisé des photos
-    spots.ts             contrôle « est-ce bien ton spot ? » (IDOR)
-    nearby.ts            recherche des spots dans un rayon (carte + assistant)
-    assistant.ts         assistant IA (Gemini) + filtre hors sujet + mode local de secours
-  middleware.ts          CSP avec nonce + blocage des origines étrangères
-  db/schema.ts           les 5 tables
-db/                      migrations SQL, init des rôles Postgres, seed
-scripts/security-test.sh tests d'attaque
-SECURITY.md              ← les 10 piliers + réponses aux questions du jury
+├─ app/                 ← Next.js : 1 dossier = 1 URL
+│  ├─ api/              ← l'API (chaque route.ts = 1-3 lignes qui appellent un controller)
+│  ├─ page.tsx          ← Explorer (carte + liste)
+│  ├─ spots/[id]/       ← fiche spot (+ edit/ pour l'auteur)
+│  ├─ spots/new/        ← ajouter un spot
+│  ├─ profile/  (auth)/login/  (auth)/register/
+│  └─ layout.tsx  globals.css
+├─ components/          ← morceaux d'interface (maps.tsx + maps.impl.tsx, PlaceCard, SpotForm…)
+├─ db/schema.ts         ← les tables (users, spots, photos, reviews, favorites + sessions)
+├─ lib/                 ← le cœur : sécurité + outils
+│  ├─ controllers/      ← HTTP : auth, lecture/validation de la requête, status, headers
+│  ├─ services/         ← logique métier : règles d'accès, un avis par personne, 6 photos max…
+│  ├─ repositories/     ← accès à la base (Drizzle) — seule couche qui touche `db`
+│  ├─ auth.ts  http.ts  validation.ts  rateLimit.ts  upload.ts  spots.ts
+│  ├─ db.ts  env.ts  logger.ts  errors.ts  geo.ts  constants.ts  types.ts
+│  ├─ client.ts         ← côté navigateur : api() ajoute l'access token (en mémoire) et le renouvelle via le cookie
+│  ├─ osm.ts  google-places.ts ← lieux (Google Places + OpenStreetMap), Nominatim, Open-Meteo
+│  ├─ assistant.ts  nearby.ts ← « Demander à l'IA » (Gemini via Vertex AI sans clé, filtre hors sujet, repli local)
+│  └─ api-routes.ts     ← table des routes (405 + Allow)
+└─ middleware.ts        ← avant CHAQUE requête : Origin, JWT, 405, CSP avec nonce
+db/migrate.ts                ← applique les migrations (rôle pause_migrator)
+scripts/security-test.mjs    ← les 73 attaques     scripts/security-test.sh ← les 27 d'origine
+scripts/contract-check.mjs   ← routes codées = routes du contrat OpenAPI     .spectral.yaml ← règles du contrat
+infra/gcp/                   ← mise en place Google Cloud (Cloud Run, CI/CD sans clé, Vertex AI)
+.github/workflows/ci-cd.yml  ← CI/CD     Dockerfile  docker-compose.yml  Caddyfile  SECURITY.md
 ```
 
-**Flux d'une requête API :** `middleware.ts` (vérifie l'origine) → `route()` (rate limit, requestId) → `requireUser()` (vérifie le JWT) → `readJson(schema)` (Zod) → Drizzle (requête paramétrée) → réponse. En cas d'erreur, `route()` renvoie un message générique et logue le détail.
+Une requête API : `middleware.ts` (Origin, JWT, 405) → `route()` (requestId, traceparent, rate limit) → controller (`requireUser()` = JWT + session active, `readJson()` + Zod)
+→ service (`assertOwner()`, règles) → repository (Drizzle → PostgreSQL avec `pause_app`) → réponse JSON (ou Problem Details) + une ligne de log.
+
+## Les routes de l'API
+
+Toutes les routes sont sous **`/api/v1/`**. Toutes demandent d'être connecté, sauf l'inscription, la connexion, l'affichage d'une photo ou d'une image, et `/api/v1/health`.
+Le navigateur n'appelle **que notre API** (plus les tuiles de la carte) : les images des lieux OpenStreetMap sont re-servies par `/api/v1/images`.
+Le design suit la cheatsheet REST : noms au pluriel, kebab-case, champs en lowerCamelCase, **erreurs en Problem Details** (`application/problem+json` : `{ type, title, status, detail, instance, code, requestId, fields? }`), collections bornées `{ data, page: { limit, nextCursor } }`, `Location` sur les 201, `WWW-Authenticate` sur les 401, `Retry-After` sur les 429, `Allow` sur les 405, `ETag` / `If-None-Match` (304) / `If-Match` (412) sur les spots, JSON Merge Patch pour les `PATCH`, `traceparent` sur chaque réponse. Contrat complet : **`public/openapi.yaml`** (OpenAPI 3.1, vérifié en CI).
+
+| Méthode | URL | Ce qu'elle fait |
+|---|---|---|
+| POST | `/api/v1/users` | Crée un compte et sa première session (20/h par IP) |
+| POST | `/api/v1/sessions` | Connexion : access token (15 min) dans la réponse + refresh token en cookie HttpOnly (10 échecs / 15 min par IP, 5 par compte) |
+| POST | `/api/v1/sessions/current/tokens` | Nouvel access token grâce au cookie, qui est remplacé à chaque fois (rotation) |
+| DELETE | `/api/v1/sessions/current` | Déconnexion de **cet** appareil (ses deux jetons meurent tout de suite) |
+| GET / PATCH / DELETE | `/api/v1/me` | Mon profil + favoris + mes spots / modifier pseudo, types, rayon / supprimer mon compte |
+| GET | `/api/v1/spots?lat=&lng=&radius=&type=` | Spots dans le rayon, du plus proche au plus loin |
+| POST | `/api/v1/spots` | Crée un spot (20/h) |
+| GET / PATCH / DELETE | `/api/v1/spots/:id` | Fiche complète (ETag) / modifier (JSON Merge Patch, If-Match) / supprimer (**l'auteur uniquement**) |
+| GET / PUT | `/api/v1/spots/:id/reviews` | Plus d'avis / créer ou mettre à jour **mon** avis (30/h) |
+| POST | `/api/v1/spots/:id/photos` | Ajouter une photo (multipart, champ `photo`, 6 max par spot, 30/h) |
+| PUT / DELETE | `/api/v1/spots/:id/favorite` | Ajouter / retirer des favoris |
+| GET / DELETE | `/api/v1/photos/:name` | L'image (publique) / la supprimer (son auteur ou celui du spot) |
+| GET | `/api/v1/images?u=&s=` | Image d'un lieu OpenStreetMap (Wikimedia), re-servie par notre API : URL signée par le serveur, vérifiée et ré-encodée |
+| GET | `/api/v1/addresses?query=&scope=global\|near`, `/api/v1/weather` | Recherche d'adresse (partout ou près de moi), météo |
+| POST | `/api/v1/assistant/messages` | Un message à l'assistant : sa réponse + les spots qu'il recommande (20 / 10 min, quotas Gemini par jour) |
+| GET | `/api/v1/health` | État du service (sans détail interne, jamais en cache) |
+
+## Ce qu'on a en plus du cahier des charges
+
+- **Vrais lieux autour de toi** en plus des spots de la communauté : cafés, bars et parcs de **Google Maps** (API Places, appelée **sans clé** depuis Cloud Run, horaires à jour), plus les bancs, cendriers et abris d'**OpenStreetMap** quand ses serveurs répondent. On peut les noter, les photographier et les mettre en favori. Si aucune source ne répond, la carte affiche quand même les spots de la communauté.
+- **Météo** (Open-Meteo), **recherche d'adresse** (Nominatim), **horaires** et « ouvert maintenant ».
+- **Spots privés** (visibles seulement par leur auteur).
+- **Access token court + refresh token rotatif** (cookie HttpOnly, SameSite=Strict) avec **détection de vol** : un refresh token rejoué coupe toute la session. **Vraie déconnexion** côté serveur (un seul appareil), **suppression de compte** (RGPD) avec ses photos.
+- Architecture **controllers / services / repositories**.
+- `Idempotency-Key` (pas de doublon si on clique deux fois), pagination des avis, `/api/v1/health`, contrat OpenAPI, mode sombre.
+- **« Demander à l'IA »** (Gemini via Vertex AI, sans clé) : une vraie conversation qui te guide vers un spot et donne des **conseils de détente** (respiration, étirements, yoga de bureau). Les spots qu'elle connaît sont lus **côté serveur** dans notre base (jamais envoyés par le navigateur), **jamais ta position**, et elle ne peut recommander que ces spots (vérifié). Les questions hors sujet sont filtrées **avant** d'appeler Gemini, des quotas par jour protègent le budget, et un mode local prend le relais si l'IA ne répond pas.
+- **Accessibilité** : 0 erreur à l'audit axe-core (WCAG 2 A/AA) sur toutes les pages, en clair et en sombre : champs étiquetés, contrastes AA, cartes cliquables au clavier, titres hiérarchisés, erreurs annoncées.
+- **Descriptions et photos dans la liste** à gauche de la carte.
+- **Mise en ligne sur Google Cloud Run** et **CI/CD** : à chaque PR, lint, contrat OpenAPI, 100 attaques, Semgrep, Trivy ; déploiement automatique au merge sur `main`, sans aucune clé stockée.
 
 ---
 
@@ -128,7 +192,7 @@ SECURITY.md              ← les 10 piliers + réponses aux questions du jury
 |---|---|---|
 | **Personne 1 : API & sécu** | `src/lib/*`, `src/app/api/*`, `SECURITY.md` | 1 Auth · 2 Rate limit/CORS · 4 Validation · 6 Logs/erreurs · 7 CSRF |
 | **Personne 2 : Front** | pages, `components/`, design (coller à la maquette) | XSS/CSP (9), upload côté UX, pourquoi le token est en header (7) |
-| **Personne 3 : Infra & données** | Docker, Caddy, Postgres, seed avec de **vrais spots + vraies photos** près de l'école, préparation AWS | 3 HTTPS/bcrypt · 5 Dépendances · 8 BDD · 9 Docker non-root · 10 Tests |
+| **Personne 3 : Infra & données** | Docker, Caddy, Postgres, seed avec de **vrais spots + vraies photos** près de l'école, Google Cloud et CI/CD (`infra/`, `.github/`) | 3 HTTPS/bcrypt · 5 Dépendances · 8 BDD · 9 Docker non-root · 10 Tests |
 
 ⚠️ Le jury peut interroger **n'importe qui sur n'importe quoi** : tout le monde lit `SECURITY.md` en entier.
 

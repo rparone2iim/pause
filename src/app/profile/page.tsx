@@ -1,98 +1,258 @@
 "use client";
-import { useEffect, useState } from "react";
+
+import { Check, Cigarette, Coffee, Heart, Loader2, LogOut, MapPinPlus, Pencil, Plus, Trash2, TreePine, Trees, Umbrella, X } from "lucide-react";
 import Link from "next/link";
-import { useRequireAuth } from "@/components/AuthProvider";
-import { FieldError, TagList, TypeBadge } from "@/components/ui";
-import { api, ApiError, directionsUrl } from "@/lib/client";
-import { SPOT_TYPES, TYPE_LABELS, type SpotType } from "@/lib/constants";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { FieldError } from "@/components/AuthCard";
+import { Avatar } from "@/components/Avatar";
+import { PlaceCard } from "@/components/PlaceCard";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { errorMessage, fieldErrors } from "@/lib/client";
+import { FILTER_DESCRIPTIONS, FILTER_LABELS, formatRadius, RADIUS_OPTIONS, SPOT_FILTERS } from "@/lib/constants";
+import { withDistance } from "@/lib/geo";
+import { useStore } from "@/lib/store";
+import type { SpotFilter } from "@/lib/types";
+import { useRequireAuth } from "@/lib/use-require-auth";
+
+const FILTER_ICONS: Record<SpotFilter, React.ComponentType<{ className?: string }>> = {
+  smoke: Cigarette,
+  coffee: Coffee,
+  quiet: Trees,
+  shade: TreePine,
+  shelter: Umbrella,
+};
+
+const chip =
+  "h-10 rounded-full border bg-card px-4 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-primary transition-all active:scale-95";
+
+function Empty({ icon: Icon, text }: { icon: React.ComponentType<{ className?: string }>; text: string }) {
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-dashed p-4 text-sm text-muted-foreground">
+      <Icon className="size-5 shrink-0" />
+      {text}
+    </div>
+  );
+}
 
 export default function ProfilePage() {
-  const { me, refresh, logout } = useRequireAuth();
+  const router = useRouter();
+  const ready = useRequireAuth();
+  const { user, favorites, mySpots, origin, logout, deleteAccount, updateProfile, toast } = useStore();
+  const [editingName, setEditingName] = useState(false);
   const [name, setName] = useState("");
-  const [types, setTypes] = useState<Set<SpotType>>(new Set());
-  const [radius, setRadius] = useState(800);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [fields, setFields] = useState<Record<string, string>>({});
+  const [nameError, setNameError] = useState<string>();
+  const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    if (!me) return;
-    setName(me.displayName); setTypes(new Set(me.preferredTypes)); setRadius(me.radiusM);
-  }, [me]);
+  if (!ready || !user) {
+    return (
+      <div className="w-full max-w-2xl mx-auto px-4 py-8 flex flex-col gap-6">
+        <div className="flex items-center gap-4">
+          <Skeleton className="size-16 rounded-full" />
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-6 w-40 rounded-full" />
+            <Skeleton className="h-4 w-56 rounded-full" />
+          </div>
+        </div>
+        <Skeleton className="h-10 w-2/3 rounded-full" />
+        <Skeleton className="h-20 rounded-2xl" />
+      </div>
+    );
+  }
 
-  if (!me) return null;
-
-  async function save(e: React.FormEvent) {
-    e.preventDefault(); setMsg(null); setFields({});
+  const save = async (patch: Parameters<typeof updateProfile>[0], success?: string) => {
     try {
-      await api("/api/me", { method: "PATCH", json: { displayName: name, preferredTypes: [...types], radiusM: radius } });
-      await refresh();
-      setMsg({ ok: true, text: "Préférences enregistrées" });
-    } catch (err) { if (err instanceof ApiError) { setMsg({ ok: false, text: err.message }); setFields(err.fields); } }
-  }
-  async function unfav(id: string) {
-    await api(`/api/spots/${id}/favorite`, { method: "DELETE" });
-    await refresh();
-  }
+      await updateProfile(patch);
+      if (success) toast(success);
+      return true;
+    } catch (e) {
+      toast(errorMessage(e), "error");
+      return false;
+    }
+  };
+
+  const saveName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setNameError(undefined);
+    try {
+      await updateProfile({ displayName: name.trim() });
+      setEditingName(false);
+      toast("Pseudo mis à jour");
+    } catch (err) {
+      setNameError(fieldErrors(err).displayName ?? errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const favs = withDistance(origin, favorites);
+  const mine = withDistance(origin, mySpots);
 
   return (
-    <main className="page stack" style={{ gap: 24 }}>
-      <section className="card row" style={{ gap: 16 }}>
-        <div className="logo-mark" style={{ width: 56, height: 56, fontSize: 22, borderRadius: 12 }}>{me.displayName.slice(0, 1).toUpperCase()}</div>
-        <div className="stack" style={{ gap: 2 }}>
-          <h1 style={{ fontSize: 24 }}>{me.displayName}</h1>
-          <span className="muted">{me.email} · rayon {me.radiusM} m (~{Math.round(me.radiusM / 80)} min à pied)</span>
+    <div className="w-full max-w-2xl mx-auto px-4 py-8 flex flex-col gap-10">
+      <div className="animate-fade-up flex items-center gap-4">
+        <Avatar name={user.displayName} className="size-16 text-xl" />
+        <div className="min-w-0 flex-1">
+          {editingName ? (
+            <form onSubmit={saveName} className="flex flex-col gap-1">
+              <div className="flex items-center gap-1.5">
+                <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} autoFocus aria-label="Pseudo" aria-invalid={Boolean(nameError)} className="h-10 rounded-2xl text-lg font-semibold" />
+                <Button type="submit" size="icon" className="rounded-full shrink-0" disabled={saving} aria-label="Enregistrer le pseudo">
+                  {saving ? <Loader2 className="animate-spin" /> : <Check />}
+                </Button>
+                <Button type="button" variant="ghost" size="icon" className="rounded-full shrink-0" onClick={() => setEditingName(false)} aria-label="Annuler">
+                  <X />
+                </Button>
+              </div>
+              <FieldError message={nameError} />
+            </form>
+          ) : (
+            <h1 className="text-2xl font-bold truncate flex items-center gap-2">
+              {user.displayName}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="rounded-full text-muted-foreground"
+                onClick={() => {
+                  setName(user.displayName);
+                  setNameError(undefined);
+                  setEditingName(true);
+                }}
+                aria-label="Modifier mon pseudo"
+              >
+                <Pencil />
+              </Button>
+            </h1>
+          )}
+          <p className="text-sm text-muted-foreground truncate">{user.email}</p>
         </div>
-        <button className="btn secondary small" style={{ marginLeft: "auto" }} onClick={logout}>Déconnexion</button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="rounded-full shadow-none"
+          onClick={async () => {
+            await logout();
+            router.push("/login");
+          }}
+        >
+          <LogOut /> <span className="hidden sm:inline">Se déconnecter</span>
+        </Button>
+      </div>
+
+      <section className="animate-fade-up flex flex-col gap-3" style={{ animationDelay: "60ms" }}>
+        <div>
+          <h2 className="text-lg font-semibold">Mes types de pause</h2>
+          <p className="text-sm text-muted-foreground">Ils servent de filtres par défaut sur la carte.</p>
+        </div>
+        <ToggleGroup
+          type="multiple"
+          value={user.preferredTypes}
+          onValueChange={(v) => save({ preferredTypes: v as SpotFilter[] })}
+          className="flex flex-wrap justify-start gap-2"
+          aria-label="Types de pause préférés"
+        >
+          {SPOT_FILTERS.map((f) => {
+            const Icon = FILTER_ICONS[f];
+            return (
+              <ToggleGroupItem key={f} value={f} title={FILTER_DESCRIPTIONS[f]} className={chip}>
+                <Icon className="size-4" />
+                {FILTER_LABELS[f]}
+              </ToggleGroupItem>
+            );
+          })}
+        </ToggleGroup>
       </section>
 
-      <div className="grid-2" style={{ gridTemplateColumns: "360px minmax(0,1fr)" }}>
-        <form className="card stack" onSubmit={save}>
-          <h2>Mes préférences de pause</h2>
-          <p className="muted small">Servent de filtres par défaut sur la carte.</p>
-          <label className="field">Pseudo
-            <input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={40} />
-            <FieldError msg={fields.displayName} />
-          </label>
-          <div className="stack" style={{ gap: 6 }}>
-            <span style={{ fontWeight: 500 }}>Types préférés</span>
-            <div className="row">
-              {SPOT_TYPES.map((t) => (
-                <button type="button" key={t} className="chip" aria-pressed={types.has(t)}
-                  onClick={() => setTypes((p) => { const n = new Set(p); if (n.has(t)) n.delete(t); else n.add(t); return n; })}>
-                  {TYPE_LABELS[t].emoji} {TYPE_LABELS[t].label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <label className="field">Distance max à pied
-            <select className="input" value={radius} onChange={(e) => setRadius(Number(e.target.value))}>
-              {[300, 500, 800, 1500, 3000].map((r) => <option key={r} value={r}>{r} m (~{Math.round(r / 80)} min)</option>)}
-            </select>
-          </label>
-          {msg && <div className={`alert ${msg.ok ? "ok" : ""}`}>{msg.text}</div>}
-          <button className="btn">Enregistrer</button>
-        </form>
+      <section className="animate-fade-up flex flex-col gap-3" style={{ animationDelay: "90ms" }}>
+        <div>
+          <h2 className="text-lg font-semibold">Distance max</h2>
+          <p className="text-sm text-muted-foreground">Le rayon affiché par défaut autour de toi.</p>
+        </div>
+        <ToggleGroup
+          type="single"
+          value={String(user.radiusM)}
+          onValueChange={(v) => v && save({ radiusM: Number(v) }, "Distance mise à jour")}
+          className="flex flex-wrap justify-start gap-2"
+          aria-label="Distance max"
+        >
+          {RADIUS_OPTIONS.map((r) => (
+            <ToggleGroupItem key={r} value={String(r)} className={chip}>
+              {formatRadius(r)}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </section>
 
-        <section className="stack">
-          <h2>Mes spots favoris ({me.favorites.length})</h2>
-          {me.favorites.length === 0 && <div className="card empty">Aucun favori pour l&apos;instant. Ajoute-en depuis une fiche spot.</div>}
-          <div className="stack">
-            {me.favorites.map((s) => (
-              <article key={s.id} className="card stack" style={{ gap: 8 }}>
-                <div className="row" style={{ justifyContent: "space-between" }}>
-                  <h3><Link href={`/spots/${s.id}`}>{s.name}</Link></h3>
-                  <TypeBadge type={s.type} />
-                </div>
-                <div className="row"><TagList tags={s.tags} /></div>
-                <div className="row">
-                  <a className="btn small" href={directionsUrl(s.lat, s.lng)} target="_blank" rel="noopener noreferrer">➤ Itinéraire</a>
-                  <button className="btn small secondary" onClick={() => unfav(s.id)}>Retirer</button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
-      </div>
-    </main>
+      <section className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Mes favoris</h2>
+        {favs.length === 0 ? (
+          <Empty icon={Heart} text="Touche le cœur d'un spot pour le garder ici." />
+        ) : (
+          favs.map((p, i) => <PlaceCard key={p.id} index={i} place={p} selected={false} onSelect={() => router.push(`/spots/${p.id}`)} />)
+        )}
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Mes spots</h2>
+          <Button asChild variant="ghost" size="sm" className="rounded-full">
+            <Link href="/spots/new">
+              <Plus /> Ajouter
+            </Link>
+          </Button>
+        </div>
+        {mine.length === 0 ? (
+          <Empty icon={MapPinPlus} text="Les spots que tu ajoutes apparaîtront ici." />
+        ) : (
+          mine.map((p, i) => <PlaceCard key={p.id} index={i} place={p} selected={false} onSelect={() => router.push(`/spots/${p.id}`)} />)
+        )}
+      </section>
+
+      <AlertDialog>
+        <AlertDialogTrigger asChild>
+          <Button variant="ghost" size="sm" className="self-start rounded-full text-muted-foreground hover:text-destructive">
+            <Trash2 /> Supprimer mon compte
+          </Button>
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Supprimer ton compte ?</AlertDialogTitle>
+            <AlertDialogDescription>Tes spots, tes photos, tes avis et tes favoris seront définitivement supprimés.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={async () => {
+                try {
+                  await deleteAccount();
+                  toast("Compte supprimé", "info");
+                  router.push("/register");
+                } catch (e) {
+                  toast(errorMessage(e), "error");
+                }
+              }}
+            >
+              Supprimer
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   );
 }

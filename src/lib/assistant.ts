@@ -1,7 +1,17 @@
 import "server-only";
 import { logger } from "./logger";
-import { TYPE_LABELS, TAG_LABELS, type SpotType } from "./constants";
+import type { SpotType } from "@/db/schema";
 import type { NearbySpot } from "./nearby";
+
+const TYPE_LABELS: Record<SpotType, { label: string; emoji: string }> = {
+  cafe: { label: "Café", emoji: "☕" },
+  bar: { label: "Bar", emoji: "🍺" },
+  terrace: { label: "Terrasse", emoji: "☀️" },
+  park: { label: "Parc", emoji: "🌳" },
+  bench: { label: "Banc calme", emoji: "🪑" },
+  smoking: { label: "Coin fumeur", emoji: "🚬" },
+  shelter: { label: "Abri", emoji: "☂️" },
+};
 
 /*
  * Assistant « Demander à Pause »
@@ -64,10 +74,13 @@ const SAFETY_NOTE = "Ce sont des conseils de bien-être, pas un avis médical : 
 const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 
 const TYPE_KEYS: Record<SpotType, string[]> = {
-  SMOKING: ["fum", "clope", "cigarette", "cendrier", "tabac"],
-  CAFE: ["cafe", "expresso", "espresso", "boire", "boisson", "the "],
-  BENCH: ["calme", "banc", "tranquil", "repos", "assis", "silence", "lire", "nature", "arbre"],
-  SHELTER: ["pluie", "pleut", "abri", "vent", "froid", "mouille"],
+  smoking: ["fum", "clope", "cigarette", "cendrier", "tabac"],
+  cafe: ["cafe", "expresso", "espresso", "boire", "boisson", "the "],
+  bench: ["calme", "banc", "tranquil", "repos", "assis", "silence", "lire", "nature", "arbre"],
+  shelter: ["pluie", "pleut", "abri", "vent", "froid", "mouille"],
+  park: ["parc", "jardin", "pelouse", "herbe", "verdure"],
+  bar: ["bar", "biere", "verre", "apero"],
+  terrace: ["terrasse"],
 };
 const TIP_TRIGGERS = ["stress", "yoga", "respir", "etir", "detente", "relax", "dos", "nuque", "yeux", "fatigu", "anxi", "conseil", "meditation", "tension", "epaule", "concentr"];
 
@@ -108,7 +121,7 @@ export function localAnswer(message: string, spots: NearbySpot[]): AssistantResu
     lines.push("Petit conseil pour ta pause :");
     chosen.forEach((t) => lines.push(`• ${t.title} : ${t.text}`));
     if (!picked.length && spots.length) {
-      const calm = rank(spots.filter((s) => s.type === "BENCH" || s.tags.includes("QUIET")))[0];
+      const calm = rank(spots.filter((s) => s.type === "bench" || s.filters.includes("quiet")))[0];
       if (calm) { picked = [calm]; lines.push("", `Pour le faire au calme : ${describe(calm)}`); }
     }
     lines.push("", SAFETY_NOTE);
@@ -169,7 +182,7 @@ function systemPrompt(spots: NearbySpot[]) {
     type: TYPE_LABELS[s.type].label,
     minutes_a_pied: s.walkMin,
     note: s.rating,
-    equipements: s.tags.map((t) => TAG_LABELS[t]),
+    equipements: s.tags.map((t) => clip(t.label, 40)),
     description: clip(s.description, 200),
     acces: clip(s.accessTip, 150),
   })).join("\n");
@@ -206,6 +219,8 @@ let cachedToken: { value: string; expiresAt: number } | null = null;
 async function vertexToken(): Promise<string> {
   if (process.env.VERTEX_ACCESS_TOKEN) return process.env.VERTEX_ACCESS_TOKEN;
   if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.value;
+  // The metadata server only speaks HTTP, on a link-local address unreachable from outside the machine.
+  // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
   const res = await fetch("http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token", {
     headers: { "Metadata-Flavor": "Google" },
     signal: AbortSignal.timeout(3_000),
@@ -235,7 +250,7 @@ async function geminiTarget(model: string): Promise<{ url: string; headers: Reco
 }
 
 export async function aiAnswer(message: string, history: ChatTurn[], spots: NearbySpot[], requestId: string): Promise<AssistantResult | null> {
-  const model = process.env.AI_MODEL ?? "gemini-3.5-flash-lite";
+  const model = process.env.GEMINI_MODEL ?? "gemini-3.5-flash-lite";
   try {
     const target = await geminiTarget(model);
     if (!target) return null;

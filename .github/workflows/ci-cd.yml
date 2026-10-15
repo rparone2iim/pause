@@ -1,5 +1,7 @@
 # CI/CD Pause
-#  - À chaque push et pull request : tests (typecheck, audit, build, 27 tests de sécurité) + build des images Docker.
+#  - À chaque push et pull request : tests (lint, typecheck, audit, contrat OpenAPI, build, tests d'attaque),
+#    analyse statique du code (Semgrep), build des images Docker + scan de leurs failles (Trivy).
+#  - Les actions GitHub sont figées sur un commit (SHA) : un tag déplacé par un pirate ne change rien.
 #  - Sur main uniquement, si tout est vert : déploiement sur Google Cloud Run.
 # Aucune clé Google n'est stockée dans GitHub : authentification par Workload Identity Federation
 # (voir infra/gcp/setup-cicd.sh).
@@ -42,9 +44,9 @@ jobs:
       UPLOAD_DIR: ${{ github.workspace }}/uploads
       TRUST_PROXY: "false"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
           cache: npm
@@ -54,6 +56,14 @@ jobs:
 
       - name: Audit des dépendances (pilier 5)
         run: npm run audit
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Contrat OpenAPI (Spectral + routes codées = routes documentées)
+        run: |
+          npm run contract:lint
+          npm run contract:check
 
       - name: Build Next.js
         run: npm run build
@@ -82,19 +92,41 @@ jobs:
           for _ in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3000/login && exit 0; sleep 1; done
           cat app.log; exit 1
 
-      - name: Tests de sécurité (pilier 10)
+      - name: Tests d'attaque historiques d'alain
+        run: npm run security:test:alain
+
+      - name: Redémarrer l'app (remet à zéro les compteurs anti-brute-force)
+        run: |
+          pkill -f ".next/standalone/server.js" || true
+          sleep 1
+          NODE_ENV=production PORT=3000 HOSTNAME=127.0.0.1 nohup node .next/standalone/server.js >> app.log 2>&1 &
+          for _ in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3000/login && exit 0; sleep 1; done
+          cat app.log; exit 1
+
+      - name: "Tests d'attaque complets (pilier 10 : JWT, refresh token, IDOR, injections, CSRF, uploads, REST…)"
         run: npm run security:test
 
       - name: Logs de l'app (en cas d'échec)
         if: failure()
         run: cat app.log || true
 
+  sast:
+    name: Analyse statique du code (Semgrep)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container: semgrep/semgrep:1.142.0 # image officielle, version figée
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Semgrep (règles par défaut + TypeScript + Next.js) — bloque sur tout résultat
+        run: semgrep scan --config p/default --config p/typescript --config p/nextjs --metrics=off --error
+
   docker:
     name: Build des images Docker
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: docker-compose.yml valide
         env:
@@ -112,9 +144,14 @@ jobs:
       - name: L'image tourne en non-root (pilier 9)
         run: test "$(docker run --rm --entrypoint id pause-app:ci -u)" != "0"
 
+      - name: Scan des failles de l'image (Trivy, pilier 5) — bloque sur une faille haute ou critique corrigeable
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.67.2 \
+            image --quiet --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed pause-app:ci
+
   deploy:
     name: Déploiement Google Cloud Run
-    needs: [test, docker]
+    needs: [test, sast, docker]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -133,15 +170,15 @@ jobs:
       IMAGES: europe-west9-docker.pkg.dev/pause-demo-3zbux5/pause
       SITE: https://pause-572691549135.europe-west9.run.app
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Connexion à Google Cloud (sans clé)
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
         with:
           skip_install: true # gcloud est déjà sur le runner : pas de téléchargement
 
@@ -173,6 +210,6 @@ jobs:
             [ "$(curl -s -o /dev/null -w '%{http_code}' "$SITE/login")" = "200" ] && break; sleep 3
           done
           test "$(curl -s -o /dev/null -w '%{http_code}' "$SITE/login")" = "200"
-          test "$(curl -s -o /dev/null -w '%{http_code}' "$SITE/api/me")" = "401"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$SITE/api/v1/me")" = "401"
           curl -sI "$SITE/" | grep -qi '^strict-transport-security'
           echo "✔ $SITE répond (HTTPS, API protégée, HSTS)"

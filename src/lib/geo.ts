@@ -1,19 +1,34 @@
-/** Distance en mètres entre deux points GPS (formule de Haversine). */
-export function distanceM(lat1: number, lng1: number, lat2: number, lng2: number) {
+import type { LatLng, Origin, Place } from "./types";
+
+/** Walking pace used for every "x min walk" estimate (≈ 4.8 km/h). */
+export const WALK_M_PER_MIN = 80;
+
+export const DEFAULT_ORIGIN: Origin = {
+  lat: Number(process.env.NEXT_PUBLIC_DEFAULT_LAT ?? 48.8932),
+  lng: Number(process.env.NEXT_PUBLIC_DEFAULT_LNG ?? 2.2269),
+  label: process.env.NEXT_PUBLIC_DEFAULT_LABEL ?? "IIM Digital School · Nanterre",
+  source: "default",
+};
+
+export function distanceM(a: LatLng, b: LatLng) {
   const R = 6_371_000;
   const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return Math.round(2 * R * Math.asin(Math.sqrt(a)));
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-/** Rectangle (lat/lng min/max) qui contient le cercle de rayon `radiusM` : sert de pré-filtre SQL indexé. */
-export function boundingBox(lat: number, lng: number, radiusM: number) {
-  const dLat = radiusM / 111_320;
-  const dLng = radiusM / (111_320 * Math.cos((lat * Math.PI) / 180));
-  return { minLat: lat - dLat, maxLat: lat + dLat, minLng: lng - dLng, maxLng: lng + dLng };
+/** Straight-line distance × 1.25 to approximate the street network. */
+export function walkFrom(origin: LatLng, p: LatLng) {
+  const m = Math.round((distanceM(origin, p) * 1.25) / 10) * 10;
+  return { distanceM: Math.max(10, m), walkMin: Math.max(1, Math.round(m / WALK_M_PER_MIN)) };
 }
 
-/** ~80 m par minute à pied. */
-export const walkMinutes = (m: number) => Math.max(1, Math.round(m / 80));
+export function withDistance<T extends Place>(origin: LatLng, places: T[]): T[] {
+  return places.map((p) => ({ ...p, ...walkFrom(origin, p) }));
+}
+
+export function directionsUrl(from: LatLng, to: LatLng) {
+  return `https://www.google.com/maps/dir/?api=1&origin=${from.lat.toFixed(6)},${from.lng.toFixed(6)}&destination=${to.lat.toFixed(6)},${to.lng.toFixed(6)}&travelmode=walking`;
+}

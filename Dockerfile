@@ -23,6 +23,9 @@ CMD ["sh", "-c", "npx tsx db/migrate.ts && npx tsx db/seed.ts"]
 FROM node:22-slim AS runner
 ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0
 WORKDIR /app
+# L'app n'a besoin que de "node" : npm, npx et corepack (et leurs failles) ne partent pas en production.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+ && apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*  # correctifs de sécurité Debian
 # Le code appartient à root et est en lecture seule pour l'utilisateur "node" :
 # même si l'app était compromise, elle ne pourrait pas modifier son propre code.
 COPY --from=build /app/.next/standalone ./
