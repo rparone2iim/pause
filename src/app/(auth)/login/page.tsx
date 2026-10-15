@@ -9,10 +9,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { errorMessage, fieldErrors } from "@/lib/client";
 import { safeNext } from "@/lib/auth-redirect";
-import { useStore } from "@/lib/store";
+import { loginBody, toFieldErrors } from "@/lib/schemas";
+import { useAuth } from "@/hooks/use-auth";
+import { useUi } from "@/hooks/use-ui";
 
 function LoginForm() {
-  const { login, authStatus, toast } = useStore();
+  const { login, authStatus } = useAuth();
+  const { toast } = useUi();
   const router = useRouter();
   const next = safeNext(useSearchParams().get("next"));
   const [email, setEmail] = useState("");
@@ -28,11 +31,14 @@ function LoginForm() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setBusy(true);
     setError(null);
+    // Same rules as the API (shared Zod schema): a malformed email is caught here, without a request.
+    const parsed = loginBody.safeParse({ email: email.trim(), password });
+    if (!parsed.success) return setFields(toFieldErrors(parsed.error));
+    setBusy(true);
     setFields({});
     try {
-      await login(email.trim(), password);
+      await login(parsed.data.email, parsed.data.password);
       toast("Content de te revoir !");
       router.replace(next);
     } catch (err) {

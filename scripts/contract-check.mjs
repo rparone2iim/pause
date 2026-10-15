@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Contract check (REST cheatsheet: "fail the build on undocumented endpoints"):
- * every route coded in src/app/api/v1 must be in public/openapi.yaml, and the other way round.
+ * every route coded in src/app/api/v1 must be in openapi.yaml, and the other way round.
  *   npm run contract:check
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -30,7 +30,7 @@ for (const file of routeFiles(API_DIR)) {
 
 const documented = new Set();
 let current = null;
-for (const line of readFileSync(join(ROOT, "public/openapi.yaml"), "utf8").split("\n")) {
+for (const line of readFileSync(join(ROOT, "openapi.yaml"), "utf8").split("\n")) {
   if (/^components:/.test(line)) break;
   const path = line.match(/^ {2}(\/[^:]*):\s*$/);
   if (path) current = normalize(path[1]);

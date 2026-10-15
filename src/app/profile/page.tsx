@@ -23,11 +23,14 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { errorMessage, fieldErrors } from "@/lib/client";
+import { mePatchBody, toFieldErrors } from "@/lib/schemas";
 import { FILTER_DESCRIPTIONS, FILTER_LABELS, formatRadius, RADIUS_OPTIONS, SPOT_FILTERS } from "@/lib/constants";
 import { withDistance } from "@/lib/geo";
-import { useStore } from "@/lib/store";
+import { useAuth } from "@/hooks/use-auth";
+import { usePlaces } from "@/hooks/use-places";
+import { useUi } from "@/hooks/use-ui";
 import type { SpotFilter } from "@/lib/types";
-import { useRequireAuth } from "@/lib/use-require-auth";
+import { useRequireAuth } from "@/hooks/use-require-auth";
 
 const FILTER_ICONS: Record<SpotFilter, React.ComponentType<{ className?: string }>> = {
   smoke: Cigarette,
@@ -52,7 +55,9 @@ function Empty({ icon: Icon, text }: { icon: React.ComponentType<{ className?: s
 export default function ProfilePage() {
   const router = useRouter();
   const ready = useRequireAuth();
-  const { user, favorites, mySpots, origin, logout, deleteAccount, updateProfile, toast } = useStore();
+  const { user, favorites, mySpots, logout, deleteAccount, updateProfile } = useAuth();
+  const { origin } = usePlaces();
+  const { toast } = useUi();
   const [editingName, setEditingName] = useState(false);
   const [name, setName] = useState("");
   const [nameError, setNameError] = useState<string>();
@@ -87,10 +92,12 @@ export default function ProfilePage() {
 
   const saveName = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
     setNameError(undefined);
+    const parsed = mePatchBody.safeParse({ displayName: name });
+    if (!parsed.success) return setNameError(toFieldErrors(parsed.error).displayName);
+    setSaving(true);
     try {
-      await updateProfile({ displayName: name.trim() });
+      await updateProfile(parsed.data);
       setEditingName(false);
       toast("Pseudo mis à jour");
     } catch (err) {

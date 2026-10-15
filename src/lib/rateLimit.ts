@@ -1,6 +1,6 @@
 import "server-only";
 import { env } from "./env";
-import { HttpError } from "./errors";
+import { TooManyRequestsError } from "./domain-errors";
 
 /**
  * Fixed-window rate limiter kept in memory (one Node process).
@@ -27,7 +27,7 @@ export function rateLimit(key: string, limit: number, windowMs: number) {
 /** Counts one hit and throws a 429 past the limit. */
 export function enforceLimit(key: string, limit: number, windowMs: number, message = "Trop de requêtes, réessaie plus tard.") {
   const r = rateLimit(key, limit, windowMs);
-  if (!r.ok) throw new HttpError(429, message, { headers: { "Retry-After": String(r.retryAfter) } });
+  if (!r.ok) throw new TooManyRequestsError(message, r.retryAfter);
 }
 
 /** Read a counter without incrementing it (e.g. "is this account currently locked?"). */

@@ -1,9 +1,9 @@
 import "server-only";
 import type { LatLng } from "../types";
 import { fetchWeather, geocode, reverseGeocode } from "../osm";
-import { HttpError } from "../errors";
+import { UpstreamUnavailableError } from "../domain-errors";
 
-const unavailable = (what: string, retryAfter: string) => new HttpError(503, `${what} momentanément indisponible, réessaie.`, { headers: { "Retry-After": retryAfter } });
+const unavailable = (what: string, retryAfterS: number) => new UpstreamUnavailableError(`${what} momentanément indisponible, réessaie.`, retryAfterS);
 
 export const locationService = {
   /** Addresses/places matching a search: anywhere (biased around `near`), or only close to `near`. */
@@ -11,7 +11,7 @@ export const locationService = {
     try {
       return await geocode(query, near, scope);
     } catch {
-      throw unavailable("Recherche d'adresse", "5");
+      throw unavailable("Recherche d'adresse", 5);
     }
   },
 
@@ -21,7 +21,7 @@ export const locationService = {
       const { label } = await reverseGeocode(point);
       return { label, lat: point.lat, lng: point.lng };
     } catch {
-      throw unavailable("Recherche d'adresse", "5");
+      throw unavailable("Recherche d'adresse", 5);
     }
   },
 
@@ -29,7 +29,7 @@ export const locationService = {
     try {
       return await fetchWeather(point);
     } catch {
-      throw unavailable("Météo", "30");
+      throw unavailable("Météo", 30);
     }
   },
 };

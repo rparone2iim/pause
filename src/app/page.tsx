@@ -19,9 +19,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { FILTER_LABELS, formatRadius, KIND_META, RADIUS_OPTIONS, SPOT_FILTERS } from "@/lib/constants";
 import { NamedIcon } from "@/lib/icons";
-import { useStore } from "@/lib/store";
+import { useAuth } from "@/hooks/use-auth";
+import { usePlaces } from "@/hooks/use-places";
 import type { Place, SpotFilter } from "@/lib/types";
-import { useRequireAuth } from "@/lib/use-require-auth";
+import { useRequireAuth } from "@/hooks/use-require-auth";
 
 const FILTER_ICONS: Record<SpotFilter, React.ComponentType<{ className?: string }>> = {
   smoke: Cigarette,
@@ -41,7 +42,8 @@ const SORTS: { key: SortKey; label: string }[] = [
 
 export default function ExplorePage() {
   const ready = useRequireAuth();
-  const { places, status, osmAvailable, refresh, weather, radius, setRadius, origin, setOrigin, locate, user } = useStore();
+  const { user } = useAuth();
+  const { places, status, osmAvailable, refresh, weather, radius, setRadius, origin, setOrigin, locate } = usePlaces();
   const [filters, setFilters] = useState<SpotFilter[]>([]);
   const [sort, setSort] = useState<SortKey>("nearest");
   const [selectedId, setSelectedId] = useState<string | null>(null);

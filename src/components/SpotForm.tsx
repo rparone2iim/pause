@@ -12,8 +12,10 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/client";
 import { CATEGORY_CONFIG, categoryOfKind } from "@/lib/constants";
 import { NamedIcon } from "@/lib/icons";
-import type { SpotInput } from "@/lib/store";
-import { useStore } from "@/lib/store";
+import { spotCreateBody, toFieldErrors } from "@/lib/schemas";
+import type { SpotInput } from "@/hooks/use-places";
+import { usePlaces } from "@/hooks/use-places";
+import { useUi } from "@/hooks/use-ui";
 import type { Archetype, LatLng, Place, SpotFilter } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -85,10 +87,11 @@ interface Props {
 
 /** Click the map to place the point, choose the type, tick the equipment, name, description, access tip, up to 6 photos. */
 export function SpotForm({ spot, busy, fields, onSubmit }: Props) {
-  const { origin, locate, toast } = useStore();
+  const { origin, locate } = usePlaces();
+  const { toast } = useUi();
   const [draft, setDraft] = useState<Draft>(() => draftOf(spot));
   const [photos, setPhotos] = useState<{ file: File; url: string }[]>([]);
-  const [nameError, setNameError] = useState(false);
+  const [localFields, setLocalFields] = useState<Record<string, string>>({});
   const [address, setAddress] = useState<string | null>(spot?.address ?? null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -137,15 +140,22 @@ export function SpotForm({ spot, busy, fields, onSubmit }: Props) {
     if (fileRef.current) fileRef.current.value = "";
   };
 
+  // Errors found here (shared Zod schema, same rules as the API) win over the server's previous answer.
+  const errors = { ...fields, ...localFields };
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (draft.name.trim().length < 3) {
-      setNameError(true);
-      document.getElementById("spotName")?.focus();
+    const input = toInput(draft, pos, address ?? undefined);
+    const parsed = spotCreateBody.safeParse(input);
+    if (!parsed.success) {
+      const found = toFieldErrors(parsed.error);
+      setLocalFields(found);
+      if (found.name) document.getElementById("spotName")?.focus();
       return;
     }
+    setLocalFields({});
     onSubmit(
-      toInput(draft, pos, address ?? undefined),
+      input,
       photos.map((p) => p.file),
     );
   };
@@ -176,7 +186,7 @@ export function SpotForm({ spot, busy, fields, onSubmit }: Props) {
           </span>
           <span className="ml-auto shrink-0 text-xs">Clique sur la carte ou glisse le repère</span>
         </p>
-        <FieldError message={fields.lat ?? fields.lng} />
+        <FieldError message={errors.lat ?? errors.lng} />
       </div>
 
       <div>
@@ -186,14 +196,18 @@ export function SpotForm({ spot, busy, fields, onSubmit }: Props) {
           maxLength={60}
           onChange={(e) => {
             set("name", e.target.value);
-            setNameError(false);
+            setLocalFields((f) => {
+              const next = { ...f };
+              delete next.name;
+              return next;
+            });
           }}
-          aria-invalid={nameError || Boolean(fields.name)}
+          aria-invalid={Boolean(errors.name)}
           placeholder="Nom du spot"
           className="animate-fade-up h-12 rounded-2xl px-4 text-base"
           style={{ animationDelay: "120ms" }}
         />
-        <FieldError message={nameError ? "3 caractères minimum" : fields.name} />
+        <FieldError message={errors.name} />
       </div>
 
       <ToggleGroup
@@ -237,11 +251,11 @@ export function SpotForm({ spot, busy, fields, onSubmit }: Props) {
       <div className="flex flex-col gap-3">
         <div>
           <Textarea value={draft.description} maxLength={500} onChange={(e) => set("description", e.target.value)} placeholder="Description (facultatif)" className="min-h-20 rounded-2xl resize-none px-4 py-3" />
-          <FieldError message={fields.description} />
+          <FieldError message={errors.description} />
         </div>
         <div>
           <Textarea value={draft.accessTip} maxLength={300} onChange={(e) => set("accessTip", e.target.value)} placeholder="Comment y aller ? Ex. : derrière la fontaine, à gauche de l'entrée (facultatif)" className="min-h-20 rounded-2xl resize-none px-4 py-3" />
-          <FieldError message={fields.accessTip} />
+          <FieldError message={errors.accessTip} />
         </div>
       </div>
 

@@ -1,6 +1,7 @@
 import "server-only";
 import { readRefreshCookie, refreshCookie, requireUser } from "../auth";
-import { HttpError } from "../errors";
+import { SessionExpiredError } from "../domain-errors";
+import { toHttpError } from "../errors";
 import { json, noContent, readJson, route } from "../http";
 import { clientIp } from "../rateLimit";
 import { loginBody, registerBody } from "../validation";
@@ -44,9 +45,11 @@ export const authController = {
       try {
         return withSession({}, await authService.refresh(readRefreshCookie(req), requestId));
       } catch (e) {
+        if (!(e instanceof SessionExpiredError)) throw e;
         // Dead refresh token: also remove it from the browser.
-        if (e instanceof HttpError) e.options.headers = { ...e.options.headers, "Set-Cookie": refreshCookie(null) };
-        throw e;
+        const http = toHttpError(e);
+        http.options.headers = { ...http.options.headers, "Set-Cookie": refreshCookie(null) };
+        throw http;
       }
     },
     { rateLimit: { name: "refresh", limit: 30, windowMs: 60_000 } },

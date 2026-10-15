@@ -115,6 +115,9 @@ const bobToken2 = r.json?.accessToken; // second session, kept for cleanup after
 r = await call("GET", "/api/v1/spots?lat=48.89&lng=2.22");
 check("Private route without token → 401", r.status === 401 && isError(r) && r.headers.get("www-authenticate"));
 
+r = await call("GET", "/openapi.yaml");
+check("API contract not published by the site (no free map of the API)", r.status === 404 && !r.text.includes("openapi:"));
+
 r = await call("GET", "/api/v1/me", { token: "garbage.token.value" });
 check("Garbage token → 401", r.status === 401);
 

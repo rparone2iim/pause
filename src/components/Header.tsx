@@ -13,7 +13,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { formatRadius, RADIUS_OPTIONS } from "@/lib/constants";
-import { useStore } from "@/lib/store";
+import { useAuth } from "@/hooks/use-auth";
+import { usePlaces } from "@/hooks/use-places";
+import { useTheme } from "@/hooks/use-theme";
+import { useUi } from "@/hooks/use-ui";
 import { cn } from "@/lib/utils";
 import { useShowChrome } from "./AppShell";
 import { Avatar } from "./Avatar";
@@ -29,7 +32,10 @@ const NAV = [
 export function Header() {
   const pathname = usePathname();
   const router = useRouter();
-  const { radius, setRadius, theme, toggleTheme, setAskOpen, user, authStatus, logout } = useStore();
+  const { user, authStatus, logout } = useAuth();
+  const { radius, setRadius } = usePlaces();
+  const { theme, toggleTheme } = useTheme();
+  const { setAskOpen } = useUi();
   const isActive = (href: string) => (href === "/" ? pathname === "/" : pathname.startsWith(href));
   // Login / sign-up pages and logged-out visitors: no header at all.
   if (!useShowChrome()) return null;

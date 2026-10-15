@@ -9,3 +9,10 @@ tsconfig.tsbuildinfo
 .env.*
 !.env.example
 .DS_Store
+
+# Terraform : état et plugins jamais dans Git (l état est dans un bucket GCS privé)
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.tfplan

@@ -1,5 +1,5 @@
 /**
- * Every API route and its methods, in one place (mirrors src/app/api/v1 and public/openapi.yaml).
+ * Every API route and its methods, in one place (mirrors src/app/api/v1 and openapi.yaml).
  * The middleware uses it to answer 405 + `Allow` for a known path called with the wrong method.
  */
 const SEG = "[^/]+";

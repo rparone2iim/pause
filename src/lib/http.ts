@@ -2,12 +2,15 @@ import "server-only";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { z } from "zod";
 import { env } from "./env";
-import { type FieldErrors, HttpError, PROBLEM_JSON, problem } from "./errors";
+import { DomainError } from "./domain-errors";
+import { HttpError, PROBLEM_JSON, problem, toHttpError } from "./errors";
 import { log } from "./logger";
 import { clientIp, rateLimit } from "./rateLimit";
-import { spotIdParam } from "./validation";
+import { MAX_PHOTO_BYTES } from "./upload";
+import { spotIdParam, toFieldErrors } from "./validation";
 
 const MAX_JSON_BYTES = 16 * 1024; // 16 KB: photos go through multipart uploads, never JSON
+const MULTIPART_OVERHEAD = 64 * 1024;
 const GLOBAL_LIMIT = { limit: 120, windowMs: 60_000 }; // per IP, every API route
 
 export interface RouteContext<P> {
@@ -62,8 +65,10 @@ export function route<P = Record<string, never>>(handler: (ctx: RouteContext<P>)
       res = await handler({ req, url, params: (await context.params) as P, requestId });
     } catch (e) {
       const ctx = { requestId, instance: url.pathname };
-      if (e instanceof HttpError) {
-        res = json(problem(e.status, e.message, ctx, e.options.fields), { status: e.status, headers: { "Content-Type": PROBLEM_JSON, ...e.options.headers } });
+      // Business errors (services) and HTTP errors (controllers) are both safe to show; anything else is a bug.
+      const known = e instanceof DomainError ? toHttpError(e) : e instanceof HttpError ? e : null;
+      if (known) {
+        res = json(problem(known.status, known.message, ctx, known.options.fields), { status: known.status, headers: { "Content-Type": PROBLEM_JSON, ...known.options.headers } });
       } else {
         log("error", "unhandled_error", { requestId, ...traceField(trace.traceId), method: req.method, path: url.pathname, error: e instanceof Error ? (e.stack ?? e.message) : String(e) });
         res = json(problem(500, "Une erreur est survenue, réessaie.", ctx), { status: 500, headers: { "Content-Type": PROBLEM_JSON } });
@@ -102,18 +107,6 @@ export function noContent(headers: Record<string, string> = {}) {
   return new Response(null, { status: 204, headers });
 }
 
-function fieldErrors(error: z.ZodError): FieldErrors {
-  const out: FieldErrors = {};
-  for (const issue of error.issues) {
-    if (issue.code === "unrecognized_keys") {
-      for (const k of issue.keys) out[[...issue.path, k].join(".")] = "Champ non autorisé";
-    } else {
-      out[issue.path.join(".") || "body"] ??= issue.message;
-    }
-  }
-  return out;
-}
-
 /** Content-Type (415), size ≤ 16 KB (413), JSON syntax (400), then exact schema validation (400 + fields). */
 export async function readJson<S extends z.ZodType>(req: Request, schema: S, mediaTypes = ["application/json"]): Promise<z.infer<S>> {
   const type = (req.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
@@ -129,14 +122,51 @@ export async function readJson<S extends z.ZodType>(req: Request, schema: S, med
     throw new HttpError(400, "JSON invalide.");
   }
   const parsed = schema.safeParse(body);
-  if (!parsed.success) throw new HttpError(400, "Certains champs ne sont pas valides.", { fields: fieldErrors(parsed.error) });
+  if (!parsed.success) throw new HttpError(400, "Certains champs ne sont pas valides.", { fields: toFieldErrors(parsed.error) });
   return parsed.data;
+}
+
+/** Reads the request body, stopping as soon as it exceeds `max` bytes (a missing or lying Content-Length changes nothing). */
+async function readLimited(req: Request, max: number) {
+  if (Number(req.headers.get("content-length") ?? 0) > max) throw new HttpError(413, "Photo trop lourde (5 Mo maximum).");
+  const reader = req.body?.getReader();
+  if (!reader) throw new HttpError(400, "Aucune photo reçue.", { fields: { photo: "Champ obligatoire" } });
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      throw new HttpError(413, "Photo trop lourde (5 Mo maximum).");
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
+/** `multipart/form-data` with one file in the field `photo` (415, 413, 400), returned as raw bytes for photoService. */
+export async function readPhoto(req: Request): Promise<Buffer> {
+  const contentType = req.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().startsWith("multipart/form-data")) throw new HttpError(415, "Envoie la photo en multipart/form-data (champ « photo »).");
+  const raw = await readLimited(req, MAX_PHOTO_BYTES + MULTIPART_OVERHEAD);
+  let form: FormData;
+  try {
+    form = await new Response(raw, { headers: { "Content-Type": contentType } }).formData();
+  } catch {
+    throw new HttpError(400, "Formulaire illisible.");
+  }
+  const file = form.get("photo");
+  if (!(file instanceof File)) throw new HttpError(400, "Aucune photo reçue.", { fields: { photo: "Champ obligatoire" } });
+  if (file.size > MAX_PHOTO_BYTES) throw new HttpError(413, "Photo trop lourde (5 Mo maximum).");
+  return Buffer.from(await file.arrayBuffer());
 }
 
 /** Query string validation: a malformed parameter is a 400 with field details. */
 export function readQuery<S extends z.ZodType>(url: URL, schema: S): z.infer<S> {
   const parsed = schema.safeParse(Object.fromEntries(url.searchParams));
-  if (!parsed.success) throw new HttpError(400, "Paramètres invalides.", { fields: fieldErrors(parsed.error) });
+  if (!parsed.success) throw new HttpError(400, "Paramètres invalides.", { fields: toFieldErrors(parsed.error) });
   return parsed.data;
 }
 

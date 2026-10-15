@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { KIND_META } from "@/lib/constants";
 import { NamedIcon } from "@/lib/icons";
-import { useStore } from "@/lib/store";
+import { useAuth } from "@/hooks/use-auth";
 import type { Place, Tone } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -43,7 +43,7 @@ export function KindIcon({ place, className }: { place: Place; className?: strin
 export const formatDistance = (m?: number) => (m === undefined ? "" : m < 1000 ? `${m} m` : `${(m / 1000).toFixed(1).replace(".", ",")} km`);
 
 export function FavoriteButton({ place, className }: { place: Place; className?: string }) {
-  const { isFavorite, toggleFavorite } = useStore();
+  const { isFavorite, toggleFavorite } = useAuth();
   const saved = isFavorite(place.id);
   const [bump, setBump] = useState(0);
   return (
