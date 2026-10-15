@@ -7,13 +7,15 @@ import { SpotForm } from "@/components/SpotForm";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage, fieldErrors } from "@/lib/client";
-import { useStore } from "@/lib/store";
+import { usePlaces } from "@/hooks/use-places";
+import { useUi } from "@/hooks/use-ui";
 import type { Place } from "@/lib/types";
-import { useRequireAuth } from "@/lib/use-require-auth";
+import { useRequireAuth } from "@/hooks/use-require-auth";
 
 export default function NewSpotPage() {
   const ready = useRequireAuth();
-  const { addSpot, uploadPhoto, toast } = useStore();
+  const { addSpot, uploadPhoto } = usePlaces();
+  const { toast } = useUi();
   const [busy, setBusy] = useState(false);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [created, setCreated] = useState<Place | null>(null);

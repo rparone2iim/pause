@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { env } from "./env";
-import { HttpError } from "./errors";
+import { AuthenticationRequiredError, SessionExpiredError } from "./domain-errors";
 import { sessionRepository } from "./repositories/session.repository";
 
 export const JWT_ISSUER = "pause-api";
@@ -75,9 +75,6 @@ export interface AuthUser {
   sessionId: string;
 }
 
-const unauthorized = (message: string) =>
-  new HttpError(401, message, { headers: { "WWW-Authenticate": 'Bearer realm="pause", error="invalid_token"' } });
-
 /**
  * The bouncer of private routes. Reads `Authorization: Bearer <jwt>` and checks: signature,
  * algorithm forced to HS256 (a token with `alg: none` is refused), issuer, audience, expiry,
@@ -85,9 +82,9 @@ const unauthorized = (message: string) =>
  */
 export async function requireUser(req: Request): Promise<AuthUser> {
   const header = req.headers.get("authorization");
-  if (!header) throw new HttpError(401, "Connecte-toi pour continuer.", { headers: { "WWW-Authenticate": 'Bearer realm="pause"' } });
+  if (!header) throw new AuthenticationRequiredError("Connecte-toi pour continuer.");
   const [scheme, token] = header.split(" ");
-  if (scheme !== "Bearer" || !token) throw unauthorized("Session invalide, reconnecte-toi.");
+  if (scheme !== "Bearer" || !token) throw new SessionExpiredError("Session invalide, reconnecte-toi.");
   try {
     const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"], issuer: JWT_ISSUER, audience: JWT_AUDIENCE });
     const sid = payload.sid;
@@ -95,6 +92,6 @@ export async function requireUser(req: Request): Promise<AuthUser> {
     if (!(await sessionRepository.isActive(sid, payload.sub))) throw new Error("session ended");
     return { userId: payload.sub, sessionId: sid };
   } catch {
-    throw unauthorized("Ta session a expiré, reconnecte-toi.");
+    throw new SessionExpiredError("Ta session a expiré, reconnecte-toi.");
   }
 }

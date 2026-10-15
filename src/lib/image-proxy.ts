@@ -1,7 +1,7 @@
 import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { env } from "./env";
-import { HttpError } from "./errors";
+import { NotFoundError } from "./domain-errors";
 import { log } from "./logger";
 import { cleanPhoto, MAX_PHOTO_BYTES } from "./upload";
 
@@ -40,24 +40,24 @@ const cache = new Map<string, Buffer>();
 async function download(url: string): Promise<Buffer> {
   let current = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    if (!allowed(current)) throw new HttpError(404, "Image introuvable.");
+    if (!allowed(current)) throw new NotFoundError("Image introuvable.");
     const res = await fetch(current, { headers: { "User-Agent": USER_AGENT }, redirect: "manual", signal: AbortSignal.timeout(8_000) });
     if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
       current = new URL(res.headers.get("location")!, current).toString(); // each hop is checked again
       continue;
     }
-    if (!res.ok || !res.body) throw new HttpError(404, "Image introuvable.");
-    if (Number(res.headers.get("content-length") ?? 0) > MAX_PHOTO_BYTES) throw new HttpError(404, "Image introuvable.");
+    if (!res.ok || !res.body) throw new NotFoundError("Image introuvable.");
+    if (Number(res.headers.get("content-length") ?? 0) > MAX_PHOTO_BYTES) throw new NotFoundError("Image introuvable.");
     const chunks: Uint8Array[] = [];
     let size = 0;
     for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
       size += chunk.length;
-      if (size > MAX_PHOTO_BYTES) throw new HttpError(404, "Image introuvable.");
+      if (size > MAX_PHOTO_BYTES) throw new NotFoundError("Image introuvable.");
       chunks.push(chunk);
     }
     return Buffer.concat(chunks);
   }
-  throw new HttpError(404, "Image introuvable.");
+  throw new NotFoundError("Image introuvable.");
 }
 
 /** The cleaned WebP behind a signed URL handed out by proxiedImageUrl(). */
@@ -66,11 +66,11 @@ export async function proxiedImage(u: string, s: string): Promise<Buffer> {
   try {
     url = Buffer.from(u, "base64url").toString();
   } catch {
-    throw new HttpError(404, "Image introuvable.");
+    throw new NotFoundError("Image introuvable.");
   }
   const expected = Buffer.from(signature(url));
   const given = Buffer.from(s);
-  if (given.length !== expected.length || !timingSafeEqual(given, expected) || !allowed(url)) throw new HttpError(404, "Image introuvable.");
+  if (given.length !== expected.length || !timingSafeEqual(given, expected) || !allowed(url)) throw new NotFoundError("Image introuvable.");
 
   const hit = cache.get(url);
   if (hit) return hit;
@@ -81,6 +81,6 @@ export async function proxiedImage(u: string, s: string): Promise<Buffer> {
     return webp;
   } catch (e) {
     log("warn", "upstream_error", { upstream: "wikimedia", error: e instanceof Error ? e.message : String(e) });
-    throw e instanceof HttpError ? e : new HttpError(404, "Image introuvable.");
+    throw e instanceof NotFoundError ? e : new NotFoundError("Image introuvable.");
   }
 }

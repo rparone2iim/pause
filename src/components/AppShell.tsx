@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { useStore } from "@/lib/store";
+import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
 import { Footer } from "./Footer";
 
@@ -11,7 +11,7 @@ const AUTH_ROUTES = ["/login", "/register"];
 /** The header (and mobile nav) only exist for a logged-in user. */
 export function useShowChrome() {
   const pathname = usePathname();
-  const { authStatus } = useStore();
+  const { authStatus } = useAuth();
   return !AUTH_ROUTES.includes(pathname) && authStatus !== "anonymous";
 }
 

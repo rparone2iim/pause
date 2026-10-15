@@ -8,7 +8,7 @@ import { SearchDialog } from "@/components/SearchDialog";
 import { ThemeScript } from "@/components/ThemeScript";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { StoreProvider } from "@/lib/store";
+import { Providers } from "@/components/Providers";
 import "./globals.css";
 
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
@@ -28,7 +28,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
         <ThemeScript nonce={nonce} />
       </head>
       <body>
-        <StoreProvider>
+        <Providers>
           <TooltipProvider delayDuration={300}>
             <Header />
             <AppShell>{children}</AppShell>
@@ -36,7 +36,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
             <SearchDialog />
             <Toaster position="bottom-right" />
           </TooltipProvider>
-        </StoreProvider>
+        </Providers>
       </body>
     </html>
   );

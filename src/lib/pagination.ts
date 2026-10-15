@@ -1,5 +1,5 @@
 import "server-only";
-import { HttpError } from "./errors";
+import { InvalidInputError } from "./domain-errors";
 
 /** A keyset page request: `after` is the (date, id) of the last row of the previous page. */
 export interface PageArgs {
@@ -15,7 +15,7 @@ export const cursor = {
     const [iso, id] = Buffer.from(c, "base64url").toString().split("|");
     const at = new Date(iso);
     if (!id || !/^[0-9a-f-]{36}$/.test(id) || Number.isNaN(at.getTime())) {
-      throw new HttpError(400, "Curseur invalide.", { fields: { cursor: "Curseur inconnu" } });
+      throw new InvalidInputError("Curseur invalide.", { cursor: "Curseur inconnu" });
     }
     return { at, id };
   },

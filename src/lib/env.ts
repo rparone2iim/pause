@@ -12,7 +12,7 @@ const schema = z.object({
   UPLOAD_DIR: z.string().min(1).default("./uploads"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   /**
-   * "Ask AI" (Gemini). On Google Cloud: VERTEX_PROJECT → Vertex AI with NO key (the VM's own identity).
+   * "Ask AI" (Gemini). On Google Cloud: VERTEX_PROJECT → Vertex AI with NO key (the Cloud Run service's own identity).
    * Elsewhere: GEMINI_API_KEY (AI Studio). Neither → the dialog uses its local keyword matcher.
    */
   VERTEX_PROJECT: z.string().optional().transform((v) => v || undefined),
@@ -20,6 +20,8 @@ const schema = z.object({
   /** Dev only: a short-lived token, e.g. VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token). */
   VERTEX_ACCESS_TOKEN: z.string().optional().transform((v) => v || undefined),
   GEMINI_API_KEY: z.string().optional().transform((v) => v || undefined),
+  /** Only to point the AI Studio client somewhere else (a local fake Gemini in tests). */
+  GEMINI_BASE_URL: z.url().default("https://generativelanguage.googleapis.com"),
   GEMINI_MODEL: z.string().regex(/^[a-z0-9.-]+$/).default("gemini-3.5-flash-lite"),
   /** Daily Gemini budget: per user and for the whole app. Past it, the dialog answers locally. */
   AI_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(0).default(30),

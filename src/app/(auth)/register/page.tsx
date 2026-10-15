@@ -9,7 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { errorMessage, fieldErrors } from "@/lib/client";
 import { safeNext } from "@/lib/auth-redirect";
-import { useStore } from "@/lib/store";
+import { registerBody, toFieldErrors } from "@/lib/schemas";
+import { useAuth } from "@/hooks/use-auth";
+import { useUi } from "@/hooks/use-ui";
 import { cn } from "@/lib/utils";
 
 const RULES = [
@@ -19,7 +21,8 @@ const RULES = [
 ];
 
 function RegisterForm() {
-  const { register, authStatus, toast } = useStore();
+  const { register, authStatus } = useAuth();
+  const { toast } = useUi();
   const router = useRouter();
   const next = safeNext(useSearchParams().get("next"));
   const [name, setName] = useState("");
@@ -34,16 +37,19 @@ function RegisterForm() {
     if (authStatus === "authenticated") router.replace(next);
   }, [authStatus, next, router]);
 
-  const valid = name.trim().length >= 2 && email.includes("@") && RULES.every((r) => r.test(password));
+  // Same rules as the API (shared Zod schema): nothing invalid is sent, and the server checks again anyway.
+  const parsed = registerBody.safeParse({ displayName: name, email: email.trim(), password });
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setBusy(true);
     setError(null);
+    if (!parsed.success) return setFields(toFieldErrors(parsed.error));
+    setBusy(true);
     setFields({});
+    const { displayName, email: cleanEmail, password: pwd } = parsed.data;
     try {
-      await register(name.trim(), email.trim(), password);
-      toast(`Bienvenue ${name.trim().split(" ")[0]} !`);
+      await register(displayName, cleanEmail, pwd);
+      toast(`Bienvenue ${displayName.split(" ")[0]} !`);
       router.replace(next);
     } catch (err) {
       setError(errorMessage(err));
@@ -132,7 +138,7 @@ function RegisterForm() {
           </ul>
         </div>
         {error && <p className="animate-fade-in rounded-2xl bg-destructive/10 px-4 py-2.5 text-sm text-destructive">{error}</p>}
-        <Button type="submit" size="lg" className="h-11 rounded-full" disabled={busy || !valid}>
+        <Button type="submit" size="lg" className="h-11 rounded-full" disabled={busy || !parsed.success}>
           {busy && <Loader2 className="animate-spin" />}
           Créer mon compte
         </Button>

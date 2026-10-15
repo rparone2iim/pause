@@ -1,7 +1,7 @@
 import "server-only";
 import type { NewSpot, Spot } from "@/db/schema";
 import { distanceM, withDistance } from "../geo";
-import { HttpError } from "../errors";
+import { NotFoundError, UpstreamUnavailableError } from "../domain-errors";
 import { fetchOsmPlace, fetchOsmPlaces, fetchWeather, reverseGeocode } from "../osm";
 import { favoriteRepository } from "../repositories/favorite.repository";
 import { photoRepository } from "../repositories/photo.repository";
@@ -12,7 +12,7 @@ import type { LatLng, Place, SpotDetail, SpotFilter } from "../types";
 import { deleteStoredPhotos, photoUrl } from "../upload";
 import { reviewService } from "./review.service";
 
-const osmUnavailable = () => new HttpError(503, "OpenStreetMap est momentanément indisponible, réessaie.", { headers: { "Retry-After": "5" } });
+const osmUnavailable = () => new UpstreamUnavailableError("OpenStreetMap est momentanément indisponible, réessaie.", 5);
 
 /** Database row → the Place shape shared with the front. */
 function toPlace(s: Spot): Place {
@@ -101,7 +101,7 @@ export const spotService = {
     if (isOsmRef(id)) {
       const live = await fetchOsmPlace(id, { utcOffsetSeconds: 0 }).catch(() => undefined);
       if (live === undefined && !row) throw osmUnavailable();
-      if (!live && !row) throw new HttpError(404, "Spot introuvable.");
+      if (!live && !row) throw new NotFoundError("Spot introuvable.");
       place = live ?? toPlace(row!);
       if (live) {
         const weather = await fetchWeather(live).catch(() => null);

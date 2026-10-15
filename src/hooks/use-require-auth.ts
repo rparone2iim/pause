@@ -2,11 +2,11 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { intentionalSignOut, useStore } from "./store";
+import { intentionalSignOut, useAuth } from "./use-auth";
 
 /** Client-side guard for private pages: sends anonymous visitors to the login page and back afterwards. */
 export function useRequireAuth() {
-  const { authStatus, hydrated } = useStore();
+  const { authStatus, hydrated } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   useEffect(() => {

@@ -1,5 +1,5 @@
 import "server-only";
-import { HttpError } from "../errors";
+import { ConflictError, ForbiddenError, NotFoundError } from "../domain-errors";
 import { log } from "../logger";
 import { MAX_PHOTOS_PER_SPOT, photoRepository } from "../repositories/photo.repository";
 import { spotRepository } from "../repositories/spot.repository";
@@ -15,7 +15,7 @@ export const photoService = {
     const row = await photoRepository.addIfRoom({ filename, spotId: spot.id, uploaderId });
     if (!row) {
       await deleteStoredPhotos([filename]);
-      throw new HttpError(409, `${MAX_PHOTOS_PER_SPOT} photos maximum par spot.`);
+      throw new ConflictError(`${MAX_PHOTOS_PER_SPOT} photos maximum par spot.`);
     }
     return { name: filename, url: photoUrl(filename), canDelete: true };
   },
@@ -24,7 +24,7 @@ export const photoService = {
   async read(filename: string) {
     const photo = await photoRepository.findByFilename(filename);
     const file = photo ? await readStoredPhoto(filename) : null;
-    if (!file) throw new HttpError(404, "Photo introuvable.");
+    if (!file) throw new NotFoundError("Photo introuvable.");
     return file;
   },
 
@@ -33,7 +33,7 @@ export const photoService = {
     const photo = await photoRepository.findByFilename(filename);
     if (!photo) return; // already gone: DELETE stays idempotent
     const spot = await spotRepository.findById(photo.spotId);
-    if (photo.uploaderId !== userId && spot?.authorId !== userId) throw new HttpError(403, "Seul l'auteur de la photo ou du spot peut la supprimer.");
+    if (photo.uploaderId !== userId && spot?.authorId !== userId) throw new ForbiddenError("Seul l'auteur de la photo ou du spot peut la supprimer.");
     await photoRepository.delete(filename);
     await deleteStoredPhotos([filename]);
     log("info", "photo_deleted", { requestId, userId });

@@ -7,9 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { api, errorMessage } from "@/lib/client";
+import { assistantMessageBody, toFieldErrors } from "@/lib/schemas";
 import { KIND_META } from "@/lib/constants";
 import { NamedIcon } from "@/lib/icons";
-import { useStore } from "@/lib/store";
+import { usePlaces } from "@/hooks/use-places";
+import { useUi } from "@/hooks/use-ui";
 import type { PlaceKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { toneClass } from "./PlaceCard";
@@ -81,7 +83,8 @@ function SpotLink({ spot, index, onOpen }: { spot: ChatSpot; index: number; onOp
 
 /** "Demander à l'IA": Pause's assistant (Gemini via Vertex AI, with a local fallback), in a dialog. */
 export function AskAI() {
-  const { askOpen, setAskOpen, origin, radius } = useStore();
+  const { origin, radius } = usePlaces();
+  const { askOpen, setAskOpen } = useUi();
   const [input, setInput] = useState("");
   const [msgs, setMsgs] = useState<Msg[]>([WELCOME]);
   const [busy, setBusy] = useState(false);
@@ -99,15 +102,21 @@ export function AskAI() {
   async function send(text: string) {
     const message = text.trim();
     if (!message || busy) return;
-    const history = msgs.filter((m) => !m.error).slice(-10).map(({ role, content }) => ({ role, content }));
+    const history = msgs.filter((m) => !m.error).slice(-10).map(({ role, content }) => ({ role, content: content.slice(0, 2000) }));
+    // The position only serves to find the spots around: the server never stores it nor gives it to the AI.
+    const parsed = assistantMessageBody.safeParse({ message, history, lat: origin.lat, lng: origin.lng, radius: Math.max(radius, 800) });
     setMsgs((m) => [...m, { role: "user", content: message }]);
+    if (!parsed.success) {
+      // Same rules as the API (shared Zod schema): e.g. a message over 500 characters never leaves the browser.
+      setMsgs((m) => [...m, { role: "assistant", content: Object.values(toFieldErrors(parsed.error))[0] ?? "Message invalide", error: true }]);
+      return;
+    }
     setInput("");
     setBusy(true);
     try {
       const res = await api<{ reply: string; spots: ChatSpot[]; mode: "ai" | "local"; notice?: string }>("/assistant/messages", {
         method: "POST",
-        // The position only serves to find the spots around: the server never stores it nor gives it to the AI.
-        body: { message, history, lat: origin.lat, lng: origin.lng, radius: Math.max(radius, 800) },
+        body: parsed.data,
       });
       setMsgs((m) => [...m, { role: "assistant", content: res.reply, spots: res.spots, mode: res.mode, notice: res.notice }]);
     } catch (e) {

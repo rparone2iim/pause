@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { type AnyPgColumn, boolean, check, doublePrecision, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { FILTER_KEYS, SPOT_TYPES } from "../lib/schemas"; // shared with the API validation and the front
 
 /*
  * Pause — the 5 tables (+ sessions: refresh tokens and server-side logout).
@@ -8,8 +9,7 @@ import { type AnyPgColumn, boolean, check, doublePrecision, index, integer, json
  * code's validation were bypassed, the database refuses an out-of-range value.
  */
 
-export const SPOT_TYPES = ["cafe", "bar", "terrace", "park", "bench", "smoking", "shelter"] as const;
-export const FILTER_KEYS = ["smoke", "coffee", "quiet", "shade", "shelter"] as const;
+export { FILTER_KEYS, SPOT_TYPES };
 export type SpotType = (typeof SPOT_TYPES)[number];
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();

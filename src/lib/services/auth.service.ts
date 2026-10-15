@@ -10,7 +10,7 @@ import {
   signAccessToken,
   verifyPassword,
 } from "../auth";
-import { HttpError } from "../errors";
+import { ConflictError, InvalidCredentialsError, SessionExpiredError, TooManyRequestsError } from "../domain-errors";
 import { log } from "../logger";
 import { peek, rateLimit } from "../rateLimit";
 import { sessionRepository } from "../repositories/session.repository";
@@ -43,15 +43,14 @@ async function openSession(userId: string): Promise<IssuedSession> {
   return { body: await accessFor(userId, session.id), refresh: { token, expiresAt } };
 }
 
-const invalidRefresh = () =>
-  new HttpError(401, "Ta session a expiré, reconnecte-toi.", { headers: { "WWW-Authenticate": 'Bearer realm="pause", error="invalid_token"' } });
+const invalidRefresh = () => new SessionExpiredError("Ta session a expiré, reconnecte-toi.");
 
 export const authService = {
   /** Creates the account and logs it in right away. */
   async register(input: { displayName: string; email: string; password: string }, requestId: string) {
     const passwordHash = await hashPassword(input.password);
     const user = await userRepository.create({ displayName: input.displayName, email: input.email, passwordHash });
-    if (!user) throw new HttpError(409, "Un compte existe déjà avec cet email.", { fields: { email: "Cet email est déjà utilisé" } });
+    if (!user) throw new ConflictError("Un compte existe déjà avec cet email.", { email: "Cet email est déjà utilisé" });
     log("info", "user_created", { requestId, userId: user.id });
     return { user: toPublicUser(user), session: await openSession(user.id) };
   },
@@ -64,7 +63,7 @@ export const authService = {
       [accountKey, MAX_FAILURES_PER_ACCOUNT],
     ] as const) {
       const state = peek(key, max);
-      if (state.blocked) throw new HttpError(429, "Trop de tentatives, réessaie dans quelques minutes.", { headers: { "Retry-After": String(state.retryAfter) } });
+      if (state.blocked) throw new TooManyRequestsError("Trop de tentatives, réessaie dans quelques minutes.", state.retryAfter);
     }
 
     const user = await userRepository.findByEmail(input.email);
@@ -74,7 +73,7 @@ export const authService = {
       rateLimit(accountKey, MAX_FAILURES_PER_ACCOUNT, LOGIN_WINDOW_MS);
       log("warn", "login_failed", { requestId: ctx.requestId, ip: ctx.ip });
       // Same message whether the email exists or not (no account enumeration).
-      throw new HttpError(401, "Email ou mot de passe incorrect.", { headers: { "WWW-Authenticate": 'Bearer realm="pause"' } });
+      throw new InvalidCredentialsError("Email ou mot de passe incorrect.");
     }
     log("info", "login_succeeded", { requestId: ctx.requestId, userId: user.id });
     return { user: toPublicUser(user), session: await openSession(user.id) };

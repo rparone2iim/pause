@@ -1,5 +1,6 @@
 import "server-only";
 import { env } from "./env";
+import { googleAccessToken } from "./google-auth";
 import { log } from "./logger";
 import type { FilterKey, LatLng, Place, PlaceKind } from "./types";
 
@@ -28,26 +29,9 @@ const FIELDS = [
 /** On Google Cloud (VERTEX_PROJECT set): enabled. Elsewhere, only with a manual token (dev). */
 export const googlePlacesEnabled = () => Boolean(env.VERTEX_PROJECT);
 
-let cachedToken: { value: string; expiresAt: number } | null = null;
-
-async function token(): Promise<string> {
-  if (env.VERTEX_ACCESS_TOKEN) return env.VERTEX_ACCESS_TOKEN;
-  if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.value;
-  // The metadata server only speaks HTTP, on a link-local address unreachable from outside the machine.
-  // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
-  const res = await fetch("http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token", {
-    headers: { "Metadata-Flavor": "Google" },
-    signal: AbortSignal.timeout(3_000),
-  });
-  if (!res.ok) throw new Error(`metadata ${res.status}`);
-  const t = (await res.json()) as { access_token: string; expires_in: number };
-  cachedToken = { value: t.access_token, expiresAt: Date.now() + t.expires_in * 1000 };
-  return t.access_token;
-}
-
 async function call<T>(path: string, init: { method: "GET" | "POST"; fieldMask: string; body?: unknown }): Promise<T> {
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${await token()}`,
+    Authorization: `Bearer ${await googleAccessToken()}`,
     "X-Goog-FieldMask": init.fieldMask,
     "Content-Type": "application/json",
   };

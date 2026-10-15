@@ -6,3 +6,5 @@ uploads
 !.env.example
 .git
 *.log
+terraform
+tests

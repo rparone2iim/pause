@@ -1,13 +1,13 @@
 import "server-only";
 import type { Spot } from "@/db/schema";
-import { HttpError } from "./errors";
+import { ForbiddenError, NotFoundError, UpstreamUnavailableError } from "./domain-errors";
 import { fetchOsmPlace } from "./osm";
 import { spotRepository } from "./repositories/spot.repository";
 import { OSM_REF } from "./validation";
 
 export const isOsmRef = (id: string) => OSM_REF.test(id);
 
-const notFound = () => new HttpError(404, "Spot introuvable.");
+const notFound = () => new NotFoundError("Spot introuvable.");
 
 /**
  * The spot row behind an id, or a 404. A private spot of someone else is also a 404
@@ -37,7 +37,7 @@ export async function getOrCreateSpot(id: string, viewerId: string): Promise<Spo
   try {
     place = await fetchOsmPlace(id, { utcOffsetSeconds: 0 });
   } catch {
-    throw new HttpError(503, "OpenStreetMap est momentanément indisponible, réessaie.", { headers: { "Retry-After": "5" } });
+    throw new UpstreamUnavailableError("OpenStreetMap est momentanément indisponible, réessaie.", 5);
   }
   if (!place) throw notFound();
   return spotRepository.upsertFromOsm({
@@ -56,5 +56,5 @@ export async function getOrCreateSpot(id: string, viewerId: string): Promise<Spo
 
 /** Anti-IDOR: being logged in is not enough, you must be the spot's author. Otherwise 403. */
 export function assertOwner(spot: Spot, userId: string) {
-  if (spot.authorId !== userId) throw new HttpError(403, "Seul l'auteur du spot peut faire ça.");
+  if (spot.authorId !== userId) throw new ForbiddenError("Seul l'auteur du spot peut faire ça.");
 }

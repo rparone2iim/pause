@@ -27,12 +27,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiError, api, errorMessage } from "@/lib/client";
+import { reviewBody, toFieldErrors } from "@/lib/schemas";
 import { KIND_META, SCORE_LABELS } from "@/lib/constants";
 import { directionsUrl, withDistance } from "@/lib/geo";
 import { NamedIcon } from "@/lib/icons";
-import { useStore } from "@/lib/store";
+import { useAuth } from "@/hooks/use-auth";
+import { usePlaces } from "@/hooks/use-places";
+import { useUi } from "@/hooks/use-ui";
 import type { Review, SpotDetail } from "@/lib/types";
-import { useRequireAuth } from "@/lib/use-require-auth";
+import { useRequireAuth } from "@/hooks/use-require-auth";
 import { cn, timeAgo } from "@/lib/utils";
 
 const DAYS: Record<string, string> = { Mo: "lun", Tu: "mar", We: "mer", Th: "jeu", Fr: "ven", Sa: "sam", Su: "dim", PH: "fériés" };
@@ -89,7 +92,9 @@ export default function SpotPage() {
   const ready = useRequireAuth();
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const { toast, deleteSpot, uploadPhoto, origin, weather, reloadMe } = useStore();
+  const { reloadMe } = useAuth();
+  const { deleteSpot, uploadPhoto, origin, weather } = usePlaces();
+  const { toast } = useUi();
   const [spot, setSpot] = useState<SpotDetail | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error" | "notfound">("loading");
   const [draft, setDraft] = useState<Draft>(draftFrom(null));
@@ -190,18 +195,21 @@ export default function SpotPage() {
       toast("Donne au moins une note globale", "info");
       return;
     }
+    // Same rules as the API (shared Zod schema): nothing invalid leaves the browser.
+    const parsed = reviewBody.safeParse({
+      rating: draft.rating,
+      ...(draft.calm && { calm: draft.calm }),
+      ...(draft.clean && { clean: draft.clean }),
+      ...(draft.seating && { seating: draft.seating }),
+      comment: draft.comment,
+    });
+    if (!parsed.success) {
+      toast(Object.values(toFieldErrors(parsed.error))[0] ?? "Avis invalide", "error");
+      return;
+    }
     setPosting(true);
     try {
-      await api(`/spots/${encodeURIComponent(spot.id)}/reviews`, {
-        method: "PUT",
-        body: {
-          rating: draft.rating,
-          ...(draft.calm && { calm: draft.calm }),
-          ...(draft.clean && { clean: draft.clean }),
-          ...(draft.seating && { seating: draft.seating }),
-          comment: draft.comment.trim(),
-        },
-      });
+      await api(`/spots/${encodeURIComponent(spot.id)}/reviews`, { method: "PUT", body: parsed.data });
       toast(spot.myReview ? "Avis mis à jour" : "Merci pour ton avis !");
       setEditing(false);
       await load();

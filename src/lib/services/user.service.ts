@@ -1,6 +1,6 @@
 import "server-only";
 import type { User } from "@/db/schema";
-import { HttpError } from "../errors";
+import { NotFoundError } from "../domain-errors";
 import { log } from "../logger";
 import { favoriteRepository } from "../repositories/favorite.repository";
 import { photoRepository } from "../repositories/photo.repository";
@@ -24,7 +24,7 @@ export function toPublicUser(u: User) {
 
 async function getUser(userId: string) {
   const user = await userRepository.findById(userId);
-  if (!user) throw new HttpError(404, "Compte introuvable.");
+  if (!user) throw new NotFoundError("Compte introuvable.");
   return user;
 }
 

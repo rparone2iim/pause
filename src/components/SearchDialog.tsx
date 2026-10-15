@@ -8,7 +8,8 @@ import { Segmented } from "@/components/Segmented";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/client";
-import { useStore } from "@/lib/store";
+import { usePlaces } from "@/hooks/use-places";
+import { useUi } from "@/hooks/use-ui";
 import { cn } from "@/lib/utils";
 
 interface Result {
@@ -28,7 +29,7 @@ const SCOPES: { value: Scope; label: string; icon: typeof Globe }[] = [
 
 /** Looks like a search field; opens the search dialog (also ⌘K / Ctrl+K). */
 export function SearchTrigger({ className }: { className?: string }) {
-  const { setSearchOpen } = useStore();
+  const { setSearchOpen } = useUi();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -59,7 +60,8 @@ export function SearchTrigger({ className }: { className?: string }) {
 
 /** Address / place search (OpenStreetMap Nominatim) that moves the break origin. */
 export function SearchDialog() {
-  const { searchOpen, setSearchOpen, origin, setOrigin, locate } = useStore();
+  const { origin, setOrigin, locate } = usePlaces();
+  const { searchOpen, setSearchOpen } = useUi();
   const router = useRouter();
   const pathname = usePathname();
   const [q, setQ] = useState("");

@@ -1,10 +1,9 @@
 import "server-only";
 import { requireUser } from "../auth";
 import { HttpError } from "../errors";
-import { json, noContent, readSpotId, route } from "../http";
+import { json, noContent, readPhoto, readSpotId, route } from "../http";
 import { enforceLimit } from "../rateLimit";
 import { photoService } from "../services/photo.service";
-import { readPhoto } from "../upload";
 import { photoNameParam } from "../validation";
 
 function readName(raw: string) {

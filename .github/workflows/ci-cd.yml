@@ -1,10 +1,11 @@
 # CI/CD Pause
-#  - À chaque push et pull request : tests (lint, typecheck, audit, contrat OpenAPI, build, tests d'attaque),
-#    analyse statique du code (Semgrep), build des images Docker + scan de leurs failles (Trivy).
+#  - À chaque push et pull request : tests (lint, typecheck, audit, contrat OpenAPI, build, tests unitaires,
+#    de composants et d'intégration, migrations montée/descente, tests d'attaque), analyse statique du code
+#    (Semgrep), build des images Docker + scan de leurs failles (Trivy), vérification du Terraform.
 #  - Les actions GitHub sont figées sur un commit (SHA) : un tag déplacé par un pirate ne change rien.
 #  - Sur main uniquement, si tout est vert : déploiement sur Google Cloud Run.
 # Aucune clé Google n'est stockée dans GitHub : authentification par Workload Identity Federation
-# (voir infra/gcp/setup-cicd.sh).
+# (voir terraform/iam.tf).
 name: CI/CD
 
 on:
@@ -71,6 +72,9 @@ jobs:
       - name: Vérification TypeScript
         run: npm run typecheck
 
+      - name: Tests unitaires et de composants (Vitest, faux Gemini, aucun service externe)
+        run: npm test
+
       - name: Base de test (2 rôles Postgres, migrations, seed)
         env:
           PGHOST: localhost
@@ -81,7 +85,15 @@ jobs:
         run: |
           sh db/init.sh
           npm run db:migrate
-          npm run db:seed
+          # Chaque migration doit pouvoir être annulée : tout descendre, puis tout remonter.
+          npm run db:rollback -- --all
+          npm run db:migrate
+
+      - name: Tests d'intégration (vraies routes de l'API contre la vraie base)
+        run: npm run test:integration
+
+      - name: Données de démo
+        run: npm run db:seed
 
       - name: Démarrer l'app (build de production)
         run: |
@@ -149,9 +161,24 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.67.2 \
             image --quiet --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed pause-app:ci
 
+  terraform:
+    name: Terraform (format + validation)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Image officielle, version figée. Pas d'accès à Google ici : on vérifie le code, sans plan ni apply.
+      - name: terraform fmt -check, init (sans état), validate
+        run: |
+          tf() { docker run --rm -v "$PWD/terraform:/tf" -w /tf hashicorp/terraform:1.16.4 "$@"; }
+          tf fmt -check -diff
+          tf init -backend=false -input=false
+          tf validate
+
   deploy:
     name: Déploiement Google Cloud Run
-    needs: [test, sast, docker]
+    needs: [test, sast, docker, terraform]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -191,17 +218,13 @@ jobs:
           docker push "$IMAGES/migrate:${GITHUB_SHA::7}"
 
       - name: Migrations + seed sur Cloud SQL (job Cloud Run, AVANT la nouvelle version)
-        # Compte pause-migrator : seul à connaître le mot de passe du rôle propriétaire du schéma.
+        # Seule l'image change : compte pause-migrator, secrets et base viennent de terraform/run.tf.
         run: |
-          gcloud run jobs deploy pause-migrate --image "$IMAGES/migrate:${GITHUB_SHA::7}" \
-            --region "$REGION" --project "$PROJECT" --quiet \
-            --service-account "pause-migrator@$PROJECT.iam.gserviceaccount.com" \
-            --set-cloudsql-instances "$PROJECT:$REGION:pause-db" \
-            --set-secrets MIGRATE_DATABASE_URL=pause-migrate-database-url:latest,DATABASE_URL=pause-database-url:latest \
-            --max-retries 0 --task-timeout 10m --execute-now --wait
+          gcloud run jobs update pause-migrate --image "$IMAGES/migrate:${GITHUB_SHA::7}" \
+            --region "$REGION" --project "$PROJECT" --quiet --execute-now --wait
 
       - name: Déploiement de la nouvelle version sur Cloud Run
-        # Seule l'image change : variables, secrets, base et photos restent ceux du service (infra/gcp/setup-cloudrun.sh)
+        # Seule l'image change : variables, secrets, base et photos viennent de terraform/run.tf
         run: gcloud run deploy pause --image "$IMAGES/app:${GITHUB_SHA::7}" --region "$REGION" --project "$PROJECT" --quiet
 
       - name: Vérifier le site en ligne

@@ -4,7 +4,7 @@ Web app qui affiche sur une carte les meilleurs spots de pause autour de toi : c
 Tu crées un compte, tu te connectes, et tu vois les spots dans un rayon de 300 m à 3 km, triés du plus proche au plus loin.
 Chaque spot a des photos, des tags, une description, un « comment y aller » et des avis. Tout le monde peut ajouter un spot.
 
-Sécurité : voir **[SECURITY.md](SECURITY.md)** (10 piliers + réponses au jury). `npm run security:test` lance 73 attaques réelles (et `npm run security:test:alain` 27 de plus), toutes bloquées.
+Sécurité : voir **[SECURITY.md](SECURITY.md)** (10 piliers + réponses au jury). `npm run security:test` lance 74 attaques réelles (et `npm run security:test:alain` 27 de plus), toutes bloquées. `npm test` lance les tests unitaires et de composants (Vitest).
 
 **En ligne : https://pause-572691549135.europe-west9.run.app** (Google Cloud Run, déployé automatiquement à chaque merge sur `main`).
 
@@ -45,16 +45,19 @@ npm run dev                 # http://localhost:3000
 
 | Commande | Rôle |
 |---|---|
-| `npm run security:test` | Les 73 attaques contre l'API (l'app doit tourner). Contre le site en ligne : `BASE_URL=https://pause-572691549135.europe-west9.run.app APP_ORIGIN=https://pause-572691549135.europe-west9.run.app npm run security:test` |
+| `npm test` | Tests unitaires (règles d'auth, schémas, erreurs, IA avec un faux Gemini…) et de composants (formulaires dans un faux navigateur) : aucun serveur ni base nécessaire |
+| `npm run test:integration` | Les vraies routes de l'API contre une vraie base migrée (`DATABASE_URL`) |
+| `npm run security:test` | Les 74 attaques contre l'API (l'app doit tourner). Contre le site en ligne : `BASE_URL=https://pause-572691549135.europe-west9.run.app APP_ORIGIN=https://pause-572691549135.europe-west9.run.app npm run security:test` |
 | `npm run security:test:alain` | Les tests d'attaque historiques d'alain (`scripts/security-test.sh`), adaptés à `/api/v1` |
 | `npm run audit` | Audit des dépendances de production |
 | `npm run lint` | ESLint (aussi lancé par `npm run build`) |
 | `npm run typecheck` | Vérification TypeScript |
-| `npm run db:generate` | Génère une migration SQL après une modification de `src/db/schema.ts` |
+| `npm run db:generate` | Génère une migration SQL après une modification de `src/db/schema.ts` (écrire aussi son inverse dans `db/migrations/down/`, sinon les tests échouent) |
+| `npm run db:rollback` | Annule la dernière migration (`-- 2` : les deux dernières, `-- --all` : tout, base vide) |
 
 ### En ligne (Google Cloud)
 
-**https://pause-572691549135.europe-west9.run.app**, sur Google Cloud à Paris (projet `pause-demo-3zbux5`, région `europe-west9`) :
+**https://pause-572691549135.europe-west9.run.app**, sur Google Cloud à Paris (projet `pause-demo-3zbux5`, région `europe-west9`). **Toute cette infra est décrite en Terraform dans `terraform/`** (rien n'est créé à la main) :
 
 | Brique | Service Google Cloud |
 |---|---|
@@ -65,7 +68,7 @@ npm run dev                 # http://localhost:3000
 | Secrets (URL de la base, `JWT_SECRET`) | **Secret Manager**, aucun secret dans l'image ni dans GitHub |
 
 - **Mettre à jour le site :** il suffit de **pousser sur `main`**. La CI/CD décrite plus bas teste puis déploie toute seule.
-- **IA :** Gemini via Vertex AI, **sans clé API**. Le service tourne avec le compte `pause-app` (Vertex AI, base, photos et ses 2 secrets, rien d'autre). L'app demande un jeton temporaire au metadata server de Google Cloud. Mise en place : `infra/gcp/setup-vertex.sh` et `infra/gcp/setup-cloudrun.sh`.
+- **IA :** Gemini via Vertex AI, **sans clé API**. Le service tourne avec le compte `pause-app` (Vertex AI, base, photos et ses 2 secrets, rien d'autre). L'app demande un jeton temporaire au metadata server de Google Cloud. Droits : `terraform/iam.tf`.
 - **Vraie IP client :** Cloud Run *ajoute* l'IP du client à la fin de `X-Forwarded-For` (ce qui est avant peut être inventé) → avec `TRUST_PROXY=true`, l'app lit la **dernière** valeur.
 - **Version en ligne :** `gcloud run services describe pause --region europe-west9 --format 'value(spec.template.spec.containers[0].image)'` (tag = hash du commit).
 - **Logs :** `gcloud run services logs read pause --region europe-west9 --limit 50`
@@ -77,13 +80,14 @@ Le fichier est `.github/workflows/ci-cd.yml`.
 
 | Quand | Job | Ce qu'il fait |
 |---|---|---|
-| Chaque push et PR | **Tests** | `npm ci`, `npm audit`, ESLint, contrat OpenAPI (Spectral + routes codées = routes documentées), build, `typecheck`, Postgres jetable (2 rôles, migrations, seed), démarrage de l'app, **27 + 73 tests d'attaque** |
+| Chaque push et PR | **Tests** | `npm ci`, `npm audit`, ESLint, contrat OpenAPI (Spectral + routes codées = routes documentées), build, `typecheck`, **tests unitaires et de composants** (Vitest), Postgres jetable (2 rôles, migrations **montées → toutes annulées → remontées**), **tests d'intégration**, seed, démarrage de l'app, **27 + 74 tests d'attaque** |
 | Chaque push et PR | **SAST** | Semgrep (règles par défaut, TypeScript, Next.js) : bloque sur le moindre résultat |
+| Chaque push et PR | **Terraform** | `terraform fmt -check` + `validate` (image officielle, version figée) |
 | Chaque push et PR | **Docker** | `docker-compose.yml` valide, build des images app + migrator, l'app tourne en non-root, **scan Trivy** de l'image (bloque sur une faille critique corrigeable) |
 | Push sur `main`, si tout est vert | **Déploiement** | Connexion à Google Cloud **sans clé** (Workload Identity Federation), images poussées dans Artifact Registry, migrations sur Cloud SQL (job Cloud Run), nouvelle version sur Cloud Run, puis vérification HTTPS, API protégée et HSTS |
 
 - **Aucun secret dans GitHub.** GitHub prouve son identité à Google avec un jeton OIDC signé. Seul le dépôt `rparone2iim/pause` sur la branche `main` peut emprunter le compte de service `github-deploy`, qui n'a que les droits pour pousser les images et déployer sur Cloud Run.
-- **Mise en place de Google Cloud :** `infra/gcp/setup-cicd.sh` (compte de service et Workload Identity Federation) puis `infra/gcp/setup-cloudrun.sh` (droits Cloud Run, Cloud SQL, photos, secrets), à lancer une seule fois.
+- **Infrastructure as Code (`terraform/`) :** Cloud Run (service + job), Cloud SQL, bucket des photos, Secret Manager (les boîtes, pas leur contenu), Artifact Registry, comptes de service, Workload Identity Federation. `terraform plan` montre l'écart entre le code et la prod (aucun aujourd'hui). La prod existait avant : `imports.tf` la fait adopter au premier `apply`, sans rien recréer. L'état est dans un bucket GCS privé (commande de création en tête de `versions.tf`), jamais dans Git. La CD ne change que l'image ; tout le reste vient de Terraform.
 - **Dependabot** (`.github/dependabot.yml`) ouvre chaque semaine des PR de mise à jour (npm, actions, images Docker), avec 7 jours de délai après chaque publication (anti paquet piégé). La CI les teste avant tout merge.
 - **Actions GitHub figées sur un commit (SHA)**, pas sur un tag qu'un pirate pourrait déplacer.
 - **`main` est protégée :** pas de push direct (même pour l'admin), PR obligatoire, CI verte et branche à jour obligatoires, pas de force-push. Une branche par fonctionnalité → PR → CI verte → merge, ce qui déploie automatiquement.
@@ -113,7 +117,8 @@ Toutes les versions sont figées dans `package.json`.
 ```
 db/
 ├─ init.sh              ← crée la base et les rôles pause_migrator / pause_app
-├─ migrations/          ← SQL généré par drizzle-kit
+├─ migrations/          ← SQL généré par drizzle-kit (+ down/ : l'inverse de chaque migration)
+├─ migrate.ts  rollback.ts ← appliquer / annuler les migrations (rôle pause_migrator)
 └─ seed.ts              ← données de démo
 src/
 ├─ app/                 ← Next.js : 1 dossier = 1 URL
@@ -123,34 +128,38 @@ src/
 │  ├─ spots/new/        ← ajouter un spot
 │  ├─ profile/  (auth)/login/  (auth)/register/
 │  └─ layout.tsx  globals.css
-├─ components/          ← morceaux d'interface (maps.tsx + maps.impl.tsx, PlaceCard, SpotForm…)
+├─ components/          ← morceaux d'interface (maps.tsx + maps.impl.tsx, PlaceCard, SpotForm…, Providers.tsx)
+├─ hooks/               ← état partagé du front, un hook par sujet : useAuth, usePlaces, useTheme, useUi, useRequireAuth
 ├─ db/schema.ts         ← les tables (users, spots, photos, reviews, favorites + sessions)
 ├─ lib/                 ← le cœur : sécurité + outils
 │  ├─ controllers/      ← HTTP : auth, lecture/validation de la requête, status, headers
-│  ├─ services/         ← logique métier : règles d'accès, un avis par personne, 6 photos max…
+│  ├─ services/         ← logique métier : règles d'accès, un avis par personne, 6 photos max… (erreurs MÉTIER, jamais HTTP)
 │  ├─ repositories/     ← accès à la base (Drizzle) — seule couche qui touche `db`
-│  ├─ auth.ts  http.ts  validation.ts  rateLimit.ts  upload.ts  spots.ts
+│  ├─ schemas.ts        ← schémas Zod des corps de requête, PARTAGÉS par l'API et les formulaires du front
+│  ├─ domain-errors.ts  ← erreurs métier (NotFound, Forbidden…) ; errors.ts les traduit en statut HTTP, en un seul endroit
+│  ├─ auth.ts  http.ts  validation.ts  rateLimit.ts  upload.ts  spots.ts  google-auth.ts
 │  ├─ db.ts  env.ts  logger.ts  errors.ts  geo.ts  constants.ts  types.ts
 │  ├─ client.ts         ← côté navigateur : api() ajoute l'access token (en mémoire) et le renouvelle via le cookie
 │  ├─ osm.ts  google-places.ts ← lieux (Google Places + OpenStreetMap), Nominatim, Open-Meteo
 │  ├─ assistant.ts  nearby.ts ← « Demander à l'IA » (Gemini via Vertex AI sans clé, filtre hors sujet, repli local)
 │  └─ api-routes.ts     ← table des routes (405 + Allow)
 └─ middleware.ts        ← avant CHAQUE requête : Origin, JWT, 405, CSP avec nonce
-db/migrate.ts                ← applique les migrations (rôle pause_migrator)
-scripts/security-test.mjs    ← les 73 attaques     scripts/security-test.sh ← les 27 d'origine
+tests/                       ← unit/ (règles), components/ (formulaires, jsdom), integration/ (vraies routes + vraie base)
+scripts/security-test.mjs    ← les 74 attaques     scripts/security-test.sh ← les 27 d'origine
+openapi.yaml                 ← contrat de l'API (OpenAPI 3.1), hors de public/ : pas publié par le site
 scripts/contract-check.mjs   ← routes codées = routes du contrat OpenAPI     .spectral.yaml ← règles du contrat
-infra/gcp/                   ← mise en place Google Cloud (Cloud Run, CI/CD sans clé, Vertex AI)
+terraform/                   ← toute l'infra Google Cloud en Terraform
 .github/workflows/ci-cd.yml  ← CI/CD     Dockerfile  docker-compose.yml  Caddyfile  SECURITY.md
 ```
 
 Une requête API : `middleware.ts` (Origin, JWT, 405) → `route()` (requestId, traceparent, rate limit) → controller (`requireUser()` = JWT + session active, `readJson()` + Zod)
-→ service (`assertOwner()`, règles) → repository (Drizzle → PostgreSQL avec `pause_app`) → réponse JSON (ou Problem Details) + une ligne de log.
+→ service (`assertOwner()`, règles, erreurs métier) → repository (Drizzle → PostgreSQL avec `pause_app`) → réponse JSON (ou Problem Details, l'erreur métier traduite par `toHttpError()`) + une ligne de log.
 
 ## Les routes de l'API
 
 Toutes les routes sont sous **`/api/v1/`**. Toutes demandent d'être connecté, sauf l'inscription, la connexion, l'affichage d'une photo ou d'une image, et `/api/v1/health`.
 Le navigateur n'appelle **que notre API** (plus les tuiles de la carte) : les images des lieux OpenStreetMap sont re-servies par `/api/v1/images`.
-Le design suit la cheatsheet REST : noms au pluriel, kebab-case, champs en lowerCamelCase, **erreurs en Problem Details** (`application/problem+json` : `{ type, title, status, detail, instance, code, requestId, fields? }`), collections bornées `{ data, page: { limit, nextCursor } }`, `Location` sur les 201, `WWW-Authenticate` sur les 401, `Retry-After` sur les 429, `Allow` sur les 405, `ETag` / `If-None-Match` (304) / `If-Match` (412) sur les spots, JSON Merge Patch pour les `PATCH`, `traceparent` sur chaque réponse. Contrat complet : **`public/openapi.yaml`** (OpenAPI 3.1, vérifié en CI).
+Le design suit la cheatsheet REST : noms au pluriel, kebab-case, champs en lowerCamelCase, **erreurs en Problem Details** (`application/problem+json` : `{ type, title, status, detail, instance, code, requestId, fields? }`), collections bornées `{ data, page: { limit, nextCursor } }`, `Location` sur les 201, `WWW-Authenticate` sur les 401, `Retry-After` sur les 429, `Allow` sur les 405, `ETag` / `If-None-Match` (304) / `If-Match` (412) sur les spots, JSON Merge Patch pour les `PATCH`, `traceparent` sur chaque réponse. Contrat complet : **`openapi.yaml`** (OpenAPI 3.1, vérifié en CI, pas publié par le site).
 
 | Méthode | URL | Ce qu'elle fait |
 |---|---|---|
@@ -182,7 +191,7 @@ Le design suit la cheatsheet REST : noms au pluriel, kebab-case, champs en lower
 - **« Demander à l'IA »** (Gemini via Vertex AI, sans clé) : une vraie conversation qui te guide vers un spot et donne des **conseils de détente** (respiration, étirements, yoga de bureau). Les spots qu'elle connaît sont lus **côté serveur** dans notre base (jamais envoyés par le navigateur), **jamais ta position**, et elle ne peut recommander que ces spots (vérifié). Les questions hors sujet sont filtrées **avant** d'appeler Gemini, des quotas par jour protègent le budget, et un mode local prend le relais si l'IA ne répond pas.
 - **Accessibilité** : 0 erreur à l'audit axe-core (WCAG 2 A/AA) sur toutes les pages, en clair et en sombre : champs étiquetés, contrastes AA, cartes cliquables au clavier, titres hiérarchisés, erreurs annoncées.
 - **Descriptions et photos dans la liste** à gauche de la carte.
-- **Mise en ligne sur Google Cloud Run** et **CI/CD** : à chaque PR, lint, contrat OpenAPI, 100 attaques, Semgrep, Trivy ; déploiement automatique au merge sur `main`, sans aucune clé stockée.
+- **Mise en ligne sur Google Cloud Run** et **CI/CD** : à chaque PR, lint, tests unitaires / composants / intégration, contrat OpenAPI, 101 attaques, Semgrep, Trivy, Terraform ; déploiement automatique au merge sur `main`, sans aucune clé stockée.
 
 ---
 
@@ -192,7 +201,7 @@ Le design suit la cheatsheet REST : noms au pluriel, kebab-case, champs en lower
 |---|---|---|
 | **Personne 1 : API & sécu** | `src/lib/*`, `src/app/api/*`, `SECURITY.md` | 1 Auth · 2 Rate limit/CORS · 4 Validation · 6 Logs/erreurs · 7 CSRF |
 | **Personne 2 : Front** | pages, `components/`, design (coller à la maquette) | XSS/CSP (9), upload côté UX, pourquoi le token est en header (7) |
-| **Personne 3 : Infra & données** | Docker, Caddy, Postgres, seed avec de **vrais spots + vraies photos** près de l'école, Google Cloud et CI/CD (`infra/`, `.github/`) | 3 HTTPS/bcrypt · 5 Dépendances · 8 BDD · 9 Docker non-root · 10 Tests |
+| **Personne 3 : Infra & données** | Docker, Caddy, Postgres, seed avec de **vrais spots + vraies photos** près de l'école, Google Cloud et CI/CD (`terraform/`, `.github/`) | 3 HTTPS/bcrypt · 5 Dépendances · 8 BDD · 9 Docker non-root · 10 Tests |
 
 ⚠️ Le jury peut interroger **n'importe qui sur n'importe quoi** : tout le monde lit `SECURITY.md` en entier.
 

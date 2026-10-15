@@ -8,16 +8,18 @@ import { SpotForm } from "@/components/SpotForm";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api, errorMessage, fieldErrors } from "@/lib/client";
-import { useStore } from "@/lib/store";
+import { usePlaces } from "@/hooks/use-places";
+import { useUi } from "@/hooks/use-ui";
 import type { SpotDetail } from "@/lib/types";
-import { useRequireAuth } from "@/lib/use-require-auth";
+import { useRequireAuth } from "@/hooks/use-require-auth";
 
 /** Edit a spot — its author only (the API answers 403 to anyone else). */
 export default function EditSpotPage() {
   const ready = useRequireAuth();
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const { updateSpot, toast } = useStore();
+  const { updateSpot } = usePlaces();
+  const { toast } = useUi();
   const [spot, setSpot] = useState<SpotDetail | null>(null);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);

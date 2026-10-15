@@ -1,5 +1,6 @@
 import "server-only";
 import pino from "pino";
+import { env } from "./env";
 
 /**
  * JSON logs (one line per event), read by Google Cloud Logging on Cloud Run.
@@ -11,7 +12,7 @@ const globalForLogger = globalThis as unknown as { pinoLogger?: pino.Logger };
 export const logger: pino.Logger =
   globalForLogger.pinoLogger ??
   pino({
-    level: process.env.LOG_LEVEL ?? "info",
+    level: env.LOG_LEVEL,
     base: undefined,
     timestamp: pino.stdTimeFunctions.isoTime,
     // Cloud Logging reads the level from "severity" (INFO, WARNING, ERROR…).

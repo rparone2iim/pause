@@ -1,4 +1,4 @@
-# Lint du contrat OpenAPI (public/openapi.yaml) : règles standard + règles de la cheatsheet REST.
+# Lint du contrat OpenAPI (openapi.yaml) : règles standard + règles de la cheatsheet REST.
 extends: ["spectral:oas"]
 rules:
   operation-description: off # chaque opération a déjà un summary
