@@ -1,20 +1,27 @@
 "use client";
 
 import "leaflet/dist/leaflet.css";
+import "maplibre-gl/dist/maplibre-gl.css";
+import { maplibreGL } from "@maplibre/maplibre-gl-leaflet";
+import { setWorkerUrl } from "maplibre-gl";
 import L from "leaflet";
 import { LocateFixed, Minus, Plus, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Circle, CircleMarker, MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from "react-leaflet";
+import { Circle, CircleMarker, MapContainer, Marker, Polyline, Tooltip, useMap, useMapEvents } from "react-leaflet";
 import { Button } from "@/components/ui/button";
+import { useTheme } from "@/hooks/use-theme";
 import { distanceM } from "@/lib/geo";
 import type { LatLng, Place, PlaceKind } from "@/lib/types";
 
 /**
- * Official OpenStreetMap tiles: free, no key, no account (CARTO's light tiles now need an API key).
- * A CSS filter gives them a light, washed-out look; dark mode inverts them (see globals.css).
+ * OpenFreeMap: a VECTOR map (OpenStreetMap data), free, no key, no account, served from a CDN.
+ * MapLibre draws it in the browser inside Leaflet (plugin maplibre-gl-leaflet): fast when moving or zooming,
+ * sharp text, and a real dark style instead of inverted images. Markers, circles and popups stay Leaflet.
+ * The credits (OpenFreeMap, OpenMapTiles, OpenStreetMap) come from the style itself.
  */
-const TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
-const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+// Its worker is served by our own site (copied by scripts/copy-maplibre-worker.mjs).
+setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
+const STYLES = { light: "https://tiles.openfreemap.org/styles/positron", dark: "https://tiles.openfreemap.org/styles/dark" };
 
 const ORANGE = "#ea580c";
 const GREEN = "#059669";
@@ -27,7 +34,15 @@ export const markerColor = (kind: PlaceKind) => (ACTIVE.includes(kind) ? ORANGE 
 const toLL = (p: LatLng): [number, number] => [p.lat, p.lng];
 
 function Tiles() {
-  return <TileLayer url={TILES} attribution={ATTRIBUTION} maxZoom={19} className="pause-tiles" />;
+  const map = useMap();
+  const { theme } = useTheme();
+  useEffect(() => {
+    const layer = maplibreGL({ style: STYLES[theme] }).addTo(map);
+    return () => {
+      layer.remove();
+    };
+  }, [map, theme]);
+  return null;
 }
 
 /** The user's position: a dark dot with a white ring. */

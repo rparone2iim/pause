@@ -84,9 +84,12 @@ function page(req: NextRequest) {
     // Leaflet and React position things with inline styles; styles can't run code.
     "style-src 'self' 'unsafe-inline'",
     // Images: our own API only, plus the map tiles. The browser never calls another site's API.
-    "img-src 'self' data: blob: https://tile.openstreetmap.org",
+    "img-src 'self' data: blob: https://tiles.openfreemap.org",
     "font-src 'self' data:",
-    `connect-src 'self'${isDev ? " ws:" : ""}`,
+    // The vector map: style, tiles, icons and fonts, all from tiles.openfreemap.org (no key).
+    `connect-src 'self' https://tiles.openfreemap.org${isDev ? " ws:" : ""}`,
+    // MapLibre draws the map in a Web Worker it creates from a blob.
+    "worker-src 'self' blob:",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -111,6 +114,6 @@ export const config = {
   matcher: [
     "/api/:path*",
     // Pages only: not static files, images or prefetches.
-    { source: "/((?!_next/static|_next/image|favicon.ico|fonts/).*)", missing: [{ type: "header", key: "next-router-prefetch" }, { type: "header", key: "purpose", value: "prefetch" }] },
+    { source: "/((?!_next/static|_next/image|favicon.ico|fonts/|maplibre/).*)", missing: [{ type: "header", key: "next-router-prefetch" }, { type: "header", key: "purpose", value: "prefetch" }] },
   ],
 };

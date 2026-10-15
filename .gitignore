@@ -16,3 +16,6 @@ tsconfig.tsbuildinfo
 *.tfstate.*
 terraform.tfvars
 *.tfplan
+
+# Worker MapLibre, copié depuis node_modules à chaque dev/build
+public/maplibre/
