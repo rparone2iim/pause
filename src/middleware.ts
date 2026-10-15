@@ -83,7 +83,6 @@ function page(req: NextRequest) {
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ""}`,
     // Leaflet and React position things with inline styles; styles can't run code.
     "style-src 'self' 'unsafe-inline'",
-    // https: images = map tiles (CARTO / OpenStreetMap) and OpenStreetMap / Wikimedia photos.
     // Images: our own API only, plus the map tiles. The browser never calls another site's API.
     "img-src 'self' data: blob: https://tile.openstreetmap.org",
     "font-src 'self' data:",
