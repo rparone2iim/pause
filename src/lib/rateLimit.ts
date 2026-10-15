@@ -1,51 +1,50 @@
 import "server-only";
-import type { NextRequest } from "next/server";
+import { env } from "./env";
 import { HttpError } from "./errors";
 
 /**
- * Pilier 2 : rate limiting "fenêtre fixe", en mémoire.
- * Suffisant pour UNE instance (la démo). En production avec plusieurs instances,
- * on le déplace dans Redis ou dans l'API Gateway / le WAF AWS (cf. SECURITY.md).
+ * Fixed-window rate limiter kept in memory (one Node process).
+ * Good enough for the bootcamp; in production put it in Redis or AWS WAF so all instances share it.
  */
-type Bucket = { count: number; resetAt: number };
-const buckets = new Map<string, Bucket>();
+// Kept on globalThis so every route shares the same counters (Next.js dev loads modules once per route).
+const g = globalThis as unknown as { rateBuckets?: Map<string, { count: number; resetAt: number }> };
+const buckets = (g.rateBuckets ??= new Map());
 
-export function rateLimit(key: string, max: number, windowMs: number) {
+export function rateLimit(key: string, limit: number, windowMs: number) {
   const now = Date.now();
-  let b = buckets.get(key);
+  const b = buckets.get(key);
   if (!b || b.resetAt <= now) {
-    b = { count: 0, resetAt: now + windowMs };
-    buckets.set(key, b);
+    buckets.set(key, { count: 1, resetAt: now + windowMs });
+    if (buckets.size > 10_000) {
+      for (const [k, v] of buckets) if (v.resetAt <= now) buckets.delete(k);
+    }
+    return { ok: true, remaining: limit - 1, retryAfter: 0 };
   }
-  b.count++;
-  if (b.count > max) {
-    const retry = Math.ceil((b.resetAt - now) / 1000);
-    throw new HttpError(429, "TOO_MANY_REQUESTS", "Trop de tentatives, réessaie plus tard", { "Retry-After": String(retry) });
-  }
+  b.count += 1;
+  return { ok: b.count <= limit, remaining: Math.max(0, limit - b.count), retryAfter: Math.ceil((b.resetAt - now) / 1000) };
 }
 
-/** Comme rateLimit, mais sans erreur : renvoie false si la limite est atteinte (sert aux quotas IA). */
-export function tryConsume(key: string, max: number, windowMs: number): boolean {
-  try { rateLimit(key, max, windowMs); return true; } catch { return false; }
+/** Counts one hit and throws a 429 past the limit. */
+export function enforceLimit(key: string, limit: number, windowMs: number, message = "Trop de requêtes, réessaie plus tard.") {
+  const r = rateLimit(key, limit, windowMs);
+  if (!r.ok) throw new HttpError(429, message, { headers: { "Retry-After": String(r.retryAfter) } });
 }
 
-// Ménage toutes les minutes pour que la Map ne grossisse pas à l'infini.
-const g = globalThis as unknown as { rlCleaner?: NodeJS.Timeout };
-g.rlCleaner ??= setInterval(() => {
+/** Read a counter without incrementing it (e.g. "is this account currently locked?"). */
+export function peek(key: string, limit: number) {
+  const b = buckets.get(key);
   const now = Date.now();
-  for (const [k, b] of buckets) if (b.resetAt <= now) buckets.delete(k);
-}, 60_000).unref();
+  if (!b || b.resetAt <= now) return { blocked: false, retryAfter: 0 };
+  return { blocked: b.count >= limit, retryAfter: Math.ceil((b.resetAt - now) / 1000) };
+}
 
 /**
- * IP du client — piège classique : le header X-Forwarded-For peut être INVENTÉ par le client.
- *  - TRUST_PROXY=true (Docker avec Caddy, ou load balancer AWS en prod) : le proxy de confiance
- *    écrase ce header avec la vraie IP → on prend la dernière valeur, celle écrite par le proxy.
- *  - Sinon (npm run dev / npm start en direct) : on IGNORE le header, sinon un attaquant
- *    changerait d'IP à chaque requête pour contourner le rate limit. Tout le monde partage
- *    alors le même compteur global (OK en local), et les limites par compte restent actives.
+ * The IP trap: anybody can send a fake `X-Forwarded-For` header and get a fresh rate-limit
+ * bucket on every attempt. It is only trusted behind a proxy (TRUST_PROXY=true): Caddy overwrites it,
+ * Cloud Run APPENDS the real client IP. Either way the LAST value is the real one; anything before
+ * it is client-supplied. Without a proxy every request shares one bucket.
  */
-export function clientIp(req: NextRequest): string {
-  if (process.env.TRUST_PROXY !== "true") return "direct";
-  const xff = req.headers.get("x-forwarded-for");
-  return xff ? xff.split(",").at(-1)!.trim() : "unknown";
+export function clientIp(req: Request) {
+  if (!env.TRUST_PROXY) return "direct";
+  return req.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim() || "unknown";
 }

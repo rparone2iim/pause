@@ -17,6 +17,7 @@ services:
       interval: 3s
       retries: 20
     # Pas de "ports:" → la base n'est PAS accessible depuis l'extérieur (pilier 9)
+    networks: [backend] # réseau interne : seuls l'app et les migrations voient la base
 
   migrate:
     build: { context: ., target: migrator }
@@ -25,6 +26,7 @@ services:
       DATABASE_URL: postgresql://pause_app:${APP_DB_PASSWORD}@db:5432/pause
     depends_on:
       db: { condition: service_healthy }
+    networks: [backend]
 
   app:
     build: { context: ., target: runner }
@@ -39,16 +41,18 @@ services:
       # Ailleurs : GEMINI_API_KEY (facultatif). Rien du tout = assistant en mode local (sans IA).
       VERTEX_PROJECT: ${VERTEX_PROJECT:-}
       VERTEX_LOCATION: ${VERTEX_LOCATION:-global}
-      AI_MODEL: ${AI_MODEL:-gemini-3.5-flash-lite}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     volumes:
       - uploads:/app/uploads
     read_only: true # système de fichiers en lecture seule…
     tmpfs: [/tmp, /app/.next/cache] # …sauf ces dossiers temporaires et le volume des photos
+    cap_drop: [ALL] # aucun privilège Linux : l'app n'en a besoin d'aucun
     security_opt: ["no-new-privileges:true"]
     depends_on:
       migrate: { condition: service_completed_successfully }
     # Pas de "ports:" non plus : seul Caddy est exposé
+    networks: [backend, frontend]
 
   proxy:
     image: caddy:2-alpine
@@ -62,6 +66,11 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
     depends_on: [app]
+    networks: [frontend] # Caddy parle à l'app, jamais à la base
+
+networks:
+  backend: { internal: true } # pas d'accès Internet, invisible depuis Caddy
+  frontend: {}
 
 volumes:
   db-data:

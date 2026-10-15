@@ -1,65 +1,139 @@
 "use client";
-/*
- * Client HTTP du front.
- * Pilier 7 : le JWT est envoyé dans le header "Authorization: Bearer …" (jamais dans un cookie).
- * Le navigateur ne l'ajoute donc JAMAIS tout seul → une attaque CSRF (un site tiers qui déclenche
- * une requête vers notre API) arrive sans token et est rejetée en 401.
- */
-const KEY = "pause_token";
 
-export function getToken(): string | null {
-  try { return localStorage.getItem(KEY); } catch { return null; }
-}
-export function setToken(t: string) {
-  try { localStorage.setItem(KEY, t); } catch { /* navigation privée */ }
-}
-export function clearToken() {
-  try { localStorage.removeItem(KEY); } catch { /* ignore */ }
-}
+/**
+ * Browser side: `api()` calls the server and adds `Authorization: Bearer <access token>`.
+ * - The access token (15 min) lives only in memory: not in localStorage, not in a cookie, so an injected
+ *   script can't pick it up from storage and another site can't make the browser send it (no CSRF).
+ * - The refresh token is an HttpOnly cookie that JavaScript can't read at all; it is only sent to
+ *   /api/v1/sessions/current/tokens, and never by another site (SameSite=Strict).
+ * When the access token is missing or expired, api() gets a new one once, then retries the request.
+ */
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public fields: Record<string, string> = {}) {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    /** Field name → message to show under that field. */
+    public fields: Record<string, string> = {},
+  ) {
     super(message);
   }
 }
 
-type Opts = { method?: string; json?: unknown; form?: FormData };
+// --- Access token, in memory only ---
 
-export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T> {
-  const headers: Record<string, string> = {};
-  const token = getToken();
+let access: { token: string; expiresAt: number } | null = null;
+
+export interface SessionTokens {
+  accessToken: string;
+  expiresAt: string;
+}
+
+export function setSession(s: SessionTokens | null) {
+  access = s ? { token: s.accessToken, expiresAt: new Date(s.expiresAt).getTime() } : null;
+}
+
+const validToken = () => (access && access.expiresAt > Date.now() + 15_000 ? access.token : null);
+
+/** Called when the session can't be renewed any more (logged out elsewhere, expired, revoked). */
+let onUnauthorized: () => void = () => {};
+export function onSessionExpired(fn: () => void) {
+  onUnauthorized = fn;
+}
+
+let refreshing: Promise<boolean> | null = null;
+
+/**
+ * New access token from the refresh cookie. One request at a time: parallel calls share it.
+ * Returns false when there is no valid session (never logged in, logged out, expired).
+ */
+export function refreshSession(): Promise<boolean> {
+  refreshing ??= (async () => {
+    try {
+      const res = await fetch("/api/v1/sessions/current/tokens", { method: "POST", headers: { Accept: "application/json" }, credentials: "same-origin" });
+      if (!res.ok) {
+        access = null;
+        return false;
+      }
+      setSession((await res.json()) as SessionTokens);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setTimeout(() => (refreshing = null), 0);
+    }
+  })();
+  return refreshing;
+}
+
+// --- api() ---
+
+interface Options {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  /** JSON body, or FormData for photo uploads. */
+  body?: unknown;
+  signal?: AbortSignal;
+  idempotencyKey?: string;
+  /** Sent as Content-Type for a JSON body (e.g. application/merge-patch+json for a PATCH). */
+  contentType?: string;
+}
+
+const PUBLIC = /^\/(users|sessions)$/;
+
+async function send(path: string, { method = "GET", body, signal, idempotencyKey, contentType }: Options, token: string | null) {
+  const headers: Record<string, string> = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
-  let body: BodyInit | undefined;
-  if (opts.json !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(opts.json); }
-  if (opts.form) body = opts.form;
-
-  const res = await fetch(path, { method: opts.method ?? (body ? "POST" : "GET"), headers, body });
-
-  if (res.status === 401 && !path.startsWith("/api/auth/")) {
-    clearToken();
-    window.location.href = "/login";
-    throw new ApiError(401, "Session expirée");
+  const isForm = body instanceof FormData;
+  if (body !== undefined && !isForm) headers["Content-Type"] = contentType ?? (method === "PATCH" ? "application/merge-patch+json" : "application/json");
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+  try {
+    return await fetch(`/api/v1${path}`, { method, headers, body: body === undefined ? undefined : isForm ? body : JSON.stringify(body), signal, credentials: "same-origin" });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") throw e;
+    throw new ApiError(0, "network-error", "Connexion impossible. Vérifie ta connexion internet.");
   }
-  if (res.status === 204) return undefined as T;
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, data?.error?.message ?? "Erreur", data?.error?.fields ?? {});
+}
+
+export async function api<T = unknown>(path: string, options: Options = {}): Promise<T> {
+  const isPublic = PUBLIC.test(path);
+  let token = isPublic ? null : validToken();
+  if (!isPublic && !token && (await refreshSession())) token = validToken();
+
+  let res = await send(path, options, token);
+  // Access token refused (expired between two checks, or revoked): one refresh, one retry.
+  if (res.status === 401 && !isPublic && (await refreshSession())) res = await send(path, options, validToken());
+
+  if (res.status === 204 || res.status === 304) return undefined as T;
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    // Errors are Problem Details (RFC 9457): { type, title, status, detail, code, fields? }.
+    if (res.status === 401 && !isPublic) {
+      access = null;
+      onUnauthorized();
+      const here = window.location.pathname;
+      if (!here.startsWith("/login") && !here.startsWith("/register")) window.location.assign(`/login?next=${encodeURIComponent(here)}`);
+    }
+    throw new ApiError(res.status, data?.code ?? "error", data?.detail ?? "Une erreur est survenue, réessaie.", data?.fields ?? {});
+  }
   return data as T;
 }
 
-export const photoUrl = (filename: string) => `/api/photos/${encodeURIComponent(filename)}`;
-export const directionsUrl = (lat: number, lng: number) =>
-  `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=walking`;
+/** Logs out on the server (this device only) and forgets the access token. */
+export async function endSession() {
+  try {
+    if (validToken() || (await refreshSession())) await send("/sessions/current", { method: "DELETE" }, validToken());
+  } finally {
+    access = null;
+  }
+}
 
-/** Position par défaut si le navigateur refuse la géoloc : Paris La Défense (Grande Arche). */
-export const DEFAULT_CENTER = { lat: 48.8925, lng: 2.2361 };
+/** The message to show for any error thrown by api(). */
+export function errorMessage(e: unknown) {
+  return e instanceof ApiError ? e.message : "Une erreur est survenue, réessaie.";
+}
 
-export function locate(): Promise<{ lat: number; lng: number }> {
-  return new Promise((resolve) => {
-    if (!navigator.geolocation) return resolve(DEFAULT_CENTER);
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
-      () => resolve(DEFAULT_CENTER),
-      { enableHighAccuracy: true, timeout: 6000 },
-    );
-  });
+/** Field errors of a 400, to show under each field. */
+export function fieldErrors(e: unknown): Record<string, string> {
+  return e instanceof ApiError ? e.fields : {};
 }

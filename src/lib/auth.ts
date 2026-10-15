@@ -1,69 +1,100 @@
 import "server-only";
-import { SignJWT, jwtVerify } from "jose";
 import bcrypt from "bcryptjs";
-import { eq } from "drizzle-orm";
-import type { NextRequest } from "next/server";
-import { db } from "./db";
-import { users } from "@/db/schema";
+import { SignJWT, jwtVerify } from "jose";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { env } from "./env";
 import { HttpError } from "./errors";
+import { sessionRepository } from "./repositories/session.repository";
 
-/* ───────────── Pilier 3 : mots de passe ───────────── */
+export const JWT_ISSUER = "pause-api";
+export const JWT_AUDIENCE = "pause-web";
+/** Short-lived access token: if it leaks, it is useless 15 minutes later. */
+export const ACCESS_TOKEN_TTL_S = 15 * 60;
+/** Refresh token: rotated on every use, the session dies after 7 days without activity or 30 days in total. */
+export const REFRESH_IDLE_MS = 7 * 24 * 3600_000;
+export const SESSION_MAX_MS = 30 * 24 * 3600_000;
+const BCRYPT_COST = 12; // ≈ 250 ms per hash: ruins brute force
 
-const BCRYPT_COST = 12; // 2^12 itérations ≈ 250 ms par hash : lent exprès, ça ruine le brute force
+const secret = new TextEncoder().encode(env.JWT_SECRET);
 
-export const hashPassword = (pw: string) => bcrypt.hash(pw, BCRYPT_COST);
-export const verifyPassword = (pw: string, hash: string) => bcrypt.compare(pw, hash);
+// --- Passwords (bcrypt) ---
 
-// Hash "bidon" : quand l'email n'existe pas, on fait quand même un bcrypt.compare
-// pour que la réponse prenne le même temps → impossible de deviner quels emails sont inscrits.
-export const DUMMY_HASH = bcrypt.hashSync("pas-un-vrai-mot-de-passe", BCRYPT_COST);
-
-/* ───────────── Pilier 1 : JWT ───────────── */
-
-const ISSUER = "pause-api";
-const AUDIENCE = "pause-web";
-const TOKEN_TTL = "2h"; // durée de vie courte : un token volé ne sert pas longtemps
-
-const key = () => new TextEncoder().encode(env().JWT_SECRET);
-
-export async function signToken(userId: string) {
-  return new SignJWT({})
-    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-    .setSubject(userId)
-    .setIssuer(ISSUER)
-    .setAudience(AUDIENCE)
-    .setIssuedAt()
-    .setExpirationTime(TOKEN_TTL)
-    .sign(key());
+export function hashPassword(password: string) {
+  return bcrypt.hash(password, BCRYPT_COST);
 }
 
-export type AuthUser = { id: string; email: string; displayName: string };
+// Compared against when the email is unknown, so response time doesn't reveal which accounts exist.
+const DUMMY_HASH = bcrypt.hashSync("not-a-real-password", BCRYPT_COST);
+
+export async function verifyPassword(password: string, hash: string | undefined) {
+  const ok = await bcrypt.compare(password, hash ?? DUMMY_HASH);
+  return Boolean(hash) && ok;
+}
+
+// --- Access tokens (jose, JWT HS256) ---
+
+export async function signAccessToken(userId: string, sessionId: string) {
+  const expiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_S * 1000);
+  const token = await new SignJWT({ sid: sessionId })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setSubject(userId)
+    .setJti(randomUUID())
+    .setIssuer(JWT_ISSUER)
+    .setAudience(JWT_AUDIENCE)
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(expiresAt.getTime() / 1000))
+    .sign(secret);
+  return { token, expiresAt };
+}
+
+// --- Refresh tokens (opaque, only their SHA-256 is stored) ---
+
+export const newRefreshToken = () => randomBytes(32).toString("base64url");
+export const hashRefreshToken = (token: string) => createHash("sha256").update(token).digest("base64url");
+
+export const REFRESH_COOKIE = "pause_refresh";
+/** Sent back only to the refresh endpoint, never readable by JavaScript, never sent by another site. */
+export const REFRESH_COOKIE_PATH = "/api/v1/sessions/current";
+
+export function refreshCookie(token: string | null, expiresAt?: Date) {
+  const secure = env.APP_ORIGIN.startsWith("https://") ? "; Secure" : "";
+  const base = `${REFRESH_COOKIE}=${token ?? ""}; Path=${REFRESH_COOKIE_PATH}; HttpOnly; SameSite=Strict${secure}`;
+  return token && expiresAt ? `${base}; Expires=${expiresAt.toUTCString()}` : `${base}; Max-Age=0`;
+}
+
+export function readRefreshCookie(req: Request) {
+  for (const part of (req.headers.get("cookie") ?? "").split(";")) {
+    const [name, ...value] = part.trim().split("=");
+    if (name === REFRESH_COOKIE) return value.join("=") || null;
+  }
+  return null;
+}
+
+export interface AuthUser {
+  userId: string;
+  sessionId: string;
+}
+
+const unauthorized = (message: string) =>
+  new HttpError(401, message, { headers: { "WWW-Authenticate": 'Bearer realm="pause", error="invalid_token"' } });
 
 /**
- * Middleware de protection des routes privées.
- * Lit "Authorization: Bearer <token>", vérifie signature + expiration + émetteur + audience,
- * et FORCE l'algorithme HS256 (un token "alg: none" ou RS256 bricolé est rejeté).
- * Puis vérifie que l'utilisateur existe encore en base (compte supprimé = token inutilisable).
+ * The bouncer of private routes. Reads `Authorization: Bearer <jwt>` and checks: signature,
+ * algorithm forced to HS256 (a token with `alg: none` is refused), issuer, audience, expiry,
+ * and that its session is still active (not logged out, not revoked, account not deleted). Otherwise: 401.
  */
-export async function requireUser(req: NextRequest): Promise<AuthUser> {
-  const header = req.headers.get("authorization") ?? "";
+export async function requireUser(req: Request): Promise<AuthUser> {
+  const header = req.headers.get("authorization");
+  if (!header) throw new HttpError(401, "Connecte-toi pour continuer.", { headers: { "WWW-Authenticate": 'Bearer realm="pause"' } });
   const [scheme, token] = header.split(" ");
-  if (scheme !== "Bearer" || !token) throw new HttpError(401, "UNAUTHENTICATED", "Connexion requise");
-
-  let sub: string | undefined;
+  if (scheme !== "Bearer" || !token) throw unauthorized("Session invalide, reconnecte-toi.");
   try {
-    const { payload } = await jwtVerify(token, key(), { algorithms: ["HS256"], issuer: ISSUER, audience: AUDIENCE });
-    sub = payload.sub;
+    const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"], issuer: JWT_ISSUER, audience: JWT_AUDIENCE });
+    const sid = payload.sid;
+    if (!payload.sub || !payload.jti || typeof sid !== "string") throw new Error("incomplete token");
+    if (!(await sessionRepository.isActive(sid, payload.sub))) throw new Error("session ended");
+    return { userId: payload.sub, sessionId: sid };
   } catch {
-    throw new HttpError(401, "UNAUTHENTICATED", "Session invalide ou expirée");
+    throw unauthorized("Ta session a expiré, reconnecte-toi.");
   }
-  if (!sub || !/^[0-9a-f-]{36}$/.test(sub)) throw new HttpError(401, "UNAUTHENTICATED", "Session invalide ou expirée");
-
-  const [user] = await db
-    .select({ id: users.id, email: users.email, displayName: users.displayName })
-    .from(users)
-    .where(eq(users.id, sub));
-  if (!user) throw new HttpError(401, "UNAUTHENTICATED", "Session invalide ou expirée");
-  return user;
 }

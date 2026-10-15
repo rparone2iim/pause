@@ -1,0 +1,715 @@
+openapi: 3.1.0
+info:
+  title: Pause API
+  version: 3.0.0
+  summary: Break spots around you (community + OpenStreetMap), accounts, reviews, photos, favorites and an AI assistant.
+  contact: { name: Équipe Pause (IIM Digital School), url: https://github.com/rparone2iim/pause }
+  license: { name: Projet étudiant, identifier: UNLICENSED }
+  description: |
+    Conventions (REST API cheatsheet):
+    - Versioned under `/api/v1`, plural nouns, lowercase kebab-case paths, lowerCamelCase JSON fields and query parameters.
+    - Authentication is modelled as resources: `POST /users` (sign up), `POST /sessions` (log in),
+      `POST /sessions/current/tokens` (refresh), `DELETE /sessions/current` (log out).
+    - Access token: JWT HS256, 15 minutes, sent ONLY in `Authorization: Bearer`. Refresh token: opaque, in an
+      `HttpOnly; SameSite=Strict` cookie scoped to `/api/v1/sessions/current`, rotated on every use; replaying an
+      already-rotated one (after a 30 s grace for parallel tabs) revokes the whole session.
+    - Every error (4xx, 5xx) is a Problem Details document (RFC 9457, `application/problem+json`).
+    - Collections are bounded and wrapped: `{ data: [...], page: { limit, nextCursor } }`; cursors are opaque.
+    - `PATCH` bodies are JSON Merge Patch (RFC 7396). Spots carry an `ETag`; `If-None-Match` → 304, `If-Match` → 412 on mismatch.
+    - `POST /spots` accepts `Idempotency-Key`. Every response echoes a W3C `traceparent` and an `X-Request-Id`.
+    - Unknown request fields are rejected (strict validation, 400); clients must ignore unknown response fields.
+    - Global rate limit: 120 requests per minute per IP (429 + `Retry-After`). A known path with the wrong method → 405 + `Allow`.
+servers:
+  - url: https://pause-572691549135.europe-west9.run.app/api/v1
+    description: Production (Google Cloud Run)
+  - url: http://localhost:3000/api/v1
+    description: Local development
+  - url: https://localhost/api/v1
+    description: Docker (Caddy)
+security:
+  - bearer: []
+tags:
+  - { name: Auth, description: Accounts and sessions (access + refresh tokens) }
+  - { name: Me, description: "My profile, favorites and spots" }
+  - { name: Spots, description: Community spots and OpenStreetMap places }
+  - { name: Reviews, description: One review per person and per spot }
+  - { name: Photos, description: "Photos of spots (re-encoded, metadata removed)" }
+  - { name: Favorites, description: My saved spots }
+  - { name: Location, description: Addresses (Nominatim) and weather (Open-Meteo) }
+  - { name: Assistant, description: "AI assistant (Gemini via Vertex AI, with a local fallback)" }
+  - { name: Health, description: Liveness }
+
+paths:
+  /users:
+    post:
+      tags: [Auth]
+      operationId: createUser
+      summary: Create an account and its first session
+      description: 20 per hour per IP. Returns the access token; the refresh token is set as an HttpOnly cookie.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [displayName, email, password]
+              properties:
+                displayName: { type: string, minLength: 2, maxLength: 40 }
+                email: { type: string, format: email, maxLength: 254 }
+                password: { type: string, minLength: 10, description: "At least one letter and one digit, 72 bytes max (bcrypt)" }
+      responses:
+        "201":
+          description: Account created and logged in
+          headers:
+            Location: { $ref: "#/components/headers/Location" }
+            Set-Cookie: { $ref: "#/components/headers/RefreshCookie" }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /sessions:
+    post:
+      tags: [Auth]
+      operationId: createSession
+      summary: Log in (open a session)
+      description: 10 failures / 15 min per IP, 5 per account. Same message whether the email exists or not.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, maxLength: 128 }
+      responses:
+        "201":
+          description: Logged in
+          headers:
+            Location: { $ref: "#/components/headers/Location" }
+            Set-Cookie: { $ref: "#/components/headers/RefreshCookie" }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /sessions/current:
+    delete:
+      tags: [Auth]
+      operationId: deleteCurrentSession
+      summary: Log out (this device only)
+      description: The session's access and refresh tokens stop working at once; other devices stay logged in.
+      responses:
+        "204": { description: Logged out, headers: { Set-Cookie: { $ref: "#/components/headers/RefreshCookie" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /sessions/current/tokens:
+    post:
+      tags: [Auth]
+      operationId: createAccessToken
+      summary: New access token from the refresh cookie
+      description: |
+        No body. The refresh token (cookie) is single-use: a new one is set. Calls from another site are refused
+        (SameSite=Strict + Origin check). An already-rotated token replayed later revokes the whole session.
+        30 per minute per IP.
+      security: [{ refreshCookie: [] }]
+      responses:
+        "200":
+          description: New access token
+          headers: { Set-Cookie: { $ref: "#/components/headers/RefreshCookie" } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/AccessToken" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /me:
+    get:
+      tags: [Me]
+      operationId: getMe
+      summary: My profile, my favorites and the spots I added
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, favorites, spots]
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+                  favorites: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/Spot" } }
+                  spots: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/Spot" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Me]
+      operationId: updateMe
+      summary: Update my display name, preferred types or default radius (JSON Merge Patch)
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json: { schema: { $ref: "#/components/schemas/MePatch" } }
+          application/json: { schema: { $ref: "#/components/schemas/MePatch" } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { type: object, properties: { user: { $ref: "#/components/schemas/User" } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [Me]
+      operationId: deleteMe
+      summary: Delete my account with my sessions, spots, photos, reviews and favorites (GDPR)
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /spots:
+    get:
+      tags: [Spots]
+      operationId: listSpots
+      summary: Spots in the radius (community + Google Maps + OpenStreetMap), nearest first
+      description: At most 300 results (the radius bounds the collection, so there is never a next page).
+      parameters:
+        - { name: lat, in: query, required: true, schema: { type: number, minimum: -90, maximum: 90 } }
+        - { name: lng, in: query, required: true, schema: { type: number, minimum: -180, maximum: 180 } }
+        - { name: radius, in: query, description: Meters, schema: { type: integer, minimum: 300, maximum: 3000, default: 800 } }
+        - { name: type, in: query, schema: { $ref: "#/components/schemas/Filter" } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    required: [osmAvailable]
+                    properties:
+                      data: { type: array, maxItems: 300, items: { $ref: "#/components/schemas/Spot" } }
+                      osmAvailable: { type: boolean, description: "false when no place provider (Google Places, OpenStreetMap) answered: community spots only" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Spots]
+      operationId: createSpot
+      summary: Add a spot (20 per hour). Supports Idempotency-Key.
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SpotInput" } } }
+      responses:
+        "201":
+          description: Created
+          headers: { Location: { $ref: "#/components/headers/Location" } }
+          content: { application/json: { schema: { type: object, properties: { spot: { $ref: "#/components/schemas/Spot" } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /spots/{spotId}:
+    parameters: [{ $ref: "#/components/parameters/SpotId" }]
+    get:
+      tags: [Spots]
+      operationId: getSpot
+      summary: The full spot — photos, averages, reviews, my review
+      parameters: [{ $ref: "#/components/parameters/IfNoneMatch" }]
+      responses:
+        "200":
+          description: OK
+          headers: { ETag: { $ref: "#/components/headers/ETag" } }
+          content: { application/json: { schema: { type: object, properties: { spot: { $ref: "#/components/schemas/SpotDetail" } } } } }
+        "304": { description: Not modified (If-None-Match matched), headers: { ETag: { $ref: "#/components/headers/ETag" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Spots]
+      operationId: updateSpot
+      summary: Edit a spot (JSON Merge Patch) — its author only
+      parameters: [{ $ref: "#/components/parameters/IfMatch" }]
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json: { schema: { $ref: "#/components/schemas/SpotPatch" } }
+          application/json: { schema: { $ref: "#/components/schemas/SpotPatch" } }
+      responses:
+        "200":
+          description: Updated
+          headers: { ETag: { $ref: "#/components/headers/ETag" } }
+          content: { application/json: { schema: { type: object, properties: { spot: { $ref: "#/components/schemas/Spot" } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "412": { $ref: "#/components/responses/PreconditionFailed" }
+    delete:
+      tags: [Spots]
+      operationId: deleteSpot
+      summary: Delete a spot with its photos, reviews and favorites — its author only
+      parameters: [{ $ref: "#/components/parameters/IfMatch" }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "412": { $ref: "#/components/responses/PreconditionFailed" }
+
+  /spots/{spotId}/reviews:
+    parameters: [{ $ref: "#/components/parameters/SpotId" }]
+    get:
+      tags: [Reviews]
+      operationId: listReviews
+      summary: Reviews, newest first (cursor pagination)
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+        - { name: cursor, in: query, description: "Opaque, from page.nextCursor", schema: { type: string, maxLength: 200 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties: { data: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/Review" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Reviews]
+      operationId: putMyReview
+      summary: Create or replace MY review (one per person and per spot, 30 per hour)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [rating]
+              properties:
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                calm: { type: integer, minimum: 1, maximum: 5 }
+                clean: { type: integer, minimum: 1, maximum: 5 }
+                seating: { type: integer, minimum: 1, maximum: 5 }
+                comment: { type: string, maxLength: 500 }
+      responses:
+        "200": { description: My review was replaced, content: { application/json: { schema: { type: object, properties: { review: { $ref: "#/components/schemas/Review" } } } } } }
+        "201": { description: Review created, content: { application/json: { schema: { type: object, properties: { review: { $ref: "#/components/schemas/Review" } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /spots/{spotId}/photos:
+    parameters: [{ $ref: "#/components/parameters/SpotId" }]
+    post:
+      tags: [Photos]
+      operationId: createPhoto
+      summary: Add a photo — JPEG/PNG/WebP, 5 MB, 6 per spot, 30 per hour. Re-encoded to WebP, metadata removed.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              properties:
+                photo: { type: string, contentMediaType: application/octet-stream }
+      responses:
+        "201":
+          description: Added
+          headers: { Location: { $ref: "#/components/headers/Location" } }
+          content: { application/json: { schema: { type: object, properties: { photo: { $ref: "#/components/schemas/Photo" } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+
+  /spots/{spotId}/favorite:
+    parameters: [{ $ref: "#/components/parameters/SpotId" }]
+    put:
+      tags: [Favorites]
+      operationId: putFavorite
+      summary: Add to my favorites (idempotent)
+      responses:
+        "204": { description: Added }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Favorites]
+      operationId: deleteFavorite
+      summary: Remove from my favorites (idempotent)
+      responses:
+        "204": { description: Removed }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /photos/{photoName}:
+    parameters:
+      - { name: photoName, in: path, required: true, description: Random name chosen by the server, schema: { type: string, pattern: '^[0-9a-f-]{36}\.webp$' } }
+    get:
+      tags: [Photos]
+      operationId: getPhoto
+      summary: The image (public — an <img> can't send a token; names are random UUIDs)
+      security: []
+      responses:
+        "200": { description: WebP image, content: { image/webp: { schema: { type: string, contentMediaType: image/webp } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Photos]
+      operationId: deletePhoto
+      summary: Delete a photo — its uploader or the spot's author
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /images:
+    get:
+      tags: [Photos]
+      operationId: getPlaceImage
+      summary: Picture of an OpenStreetMap place (Wikimedia), re-served by our API — only URLs signed by the server
+      security: []
+      parameters:
+        - { name: u, in: query, required: true, schema: { type: string }, description: "Picture URL (base64url), as handed out in `Spot.image`" }
+        - { name: s, in: query, required: true, schema: { type: string }, description: "Server signature (HMAC-SHA256)" }
+      responses:
+        "200": { description: WebP image (checked and re-encoded), content: { image/webp: { schema: { type: string, contentMediaType: image/webp } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /addresses:
+    get:
+      tags: [Location]
+      operationId: listAddresses
+      summary: Search an address (query), or the address at a point (lat + lng)
+      parameters:
+        - { name: query, in: query, schema: { type: string, minLength: 3, maxLength: 120 } }
+        - { name: lat, in: query, schema: { type: number, minimum: -90, maximum: 90 } }
+        - { name: lng, in: query, schema: { type: number, minimum: -180, maximum: 180 } }
+        - { name: scope, in: query, description: "global (default, biased around lat/lng) or near (only within ~3 km of lat/lng, closest first)", schema: { type: string, enum: [global, near] } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data: { type: array, maxItems: 8, items: { type: object, properties: { label: { type: string }, lat: { type: number }, lng: { type: number }, distanceM: { type: number } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /weather:
+    get:
+      tags: [Location]
+      operationId: getWeather
+      summary: Current weather at a point (Open-Meteo)
+      parameters:
+        - { name: lat, in: query, required: true, schema: { type: number, minimum: -90, maximum: 90 } }
+        - { name: lng, in: query, required: true, schema: { type: number, minimum: -180, maximum: 180 } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { weather: { $ref: "#/components/schemas/Weather" } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /assistant/messages:
+    post:
+      tags: [Assistant]
+      operationId: createAssistantMessage
+      summary: Send a message to the assistant, get its reply and the spots it recommends
+      description: |
+        The position only serves to find OUR spots around (read on the server); it is never stored nor sent to the AI.
+        Off-topic questions and small talk get a canned answer without calling Gemini; 6 off-topic questions in 10 min → 429.
+        20 messages / 10 min per user; Gemini quotas per user and for the whole app, then `mode: local` (rule-based answer).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [message, lat, lng]
+              properties:
+                message: { type: string, minLength: 1, maxLength: 500 }
+                history:
+                  type: array
+                  maxItems: 10
+                  items: { type: object, additionalProperties: false, required: [role, content], properties: { role: { type: string, enum: [user, assistant] }, content: { type: string, maxLength: 2000 } } }
+                lat: { type: number, minimum: -90, maximum: 90 }
+                lng: { type: number, minimum: -180, maximum: 180 }
+                radius: { type: integer, minimum: 100, maximum: 5000, default: 1500 }
+      responses:
+        "200":
+          description: The assistant's reply
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reply, mode, spots]
+                properties:
+                  reply: { type: string, description: Plain text }
+                  mode: { type: string, enum: [ai, local], description: "ai = Gemini, local = rule-based fallback" }
+                  notice: { type: string, description: Shown when the daily AI quota is reached }
+                  spots:
+                    type: array
+                    maxItems: 4
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        type: { $ref: "#/components/schemas/Kind" }
+                        walkMin: { type: integer }
+                        distanceM: { type: integer }
+                        rating: { type: [number, "null"] }
+                        image: { type: [string, "null"] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Liveness + database check (uncached, no internal details)
+      security: []
+      responses:
+        "200": { description: Healthy, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+        "503": { description: Unhealthy, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT, description: "Access token (15 min), from POST /users, POST /sessions or POST /sessions/current/tokens" }
+    refreshCookie: { type: apiKey, in: cookie, name: pause_refresh, description: "Opaque refresh token, HttpOnly + SameSite=Strict, rotated on every use" }
+
+  parameters:
+    SpotId:
+      name: spotId
+      in: path
+      required: true
+      description: UUID of a community spot, "osm-node-123" / "osm-way-…" / "osm-relation-…" for an OpenStreetMap place, or "gplace-…" for a Google Maps place
+      schema: { type: string, maxLength: 210 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: Same key within 24 h → the first response is replayed (no duplicate spot on a double click)
+      schema: { type: string, maxLength: 100 }
+    IfMatch:
+      name: If-Match
+      in: header
+      description: ETag of the version being edited; another version → 412
+      schema: { type: string }
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      description: ETag already held; unchanged → 304
+      schema: { type: string }
+
+  headers:
+    Location: { description: URL of the created resource, schema: { type: string } }
+    ETag: { description: Version of the representation, schema: { type: string } }
+    RetryAfter: { description: Seconds to wait, schema: { type: integer } }
+    RefreshCookie: { description: "pause_refresh=<token>; Path=/api/v1/sessions/current; HttpOnly; SameSite=Strict; Secure (cleared with Max-Age=0)", schema: { type: string } }
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details. `code`, `requestId` and `fields` are documented extensions.
+      required: [type, title, status, detail, instance, code, requestId]
+      properties:
+        type: { type: string, format: uri-reference, examples: [/problems/not-found] }
+        title: { type: string, description: Stable per problem type }
+        status: { type: integer, description: Same as the HTTP status }
+        detail: { type: string, description: French, safe to show to the user }
+        instance: { type: string, description: Path of the request }
+        code: { type: string, examples: [bad-request, unauthorized, forbidden, not-found, method-not-allowed, conflict, precondition-failed, rate-limited] }
+        requestId: { type: string, format: uuid, description: Find the full details in the server logs }
+        fields: { type: object, additionalProperties: { type: string }, description: Invalid field → reason (validation errors) }
+    Page:
+      type: object
+      required: [data, page]
+      properties:
+        data: { type: array, items: {} }
+        page:
+          type: object
+          required: [limit, nextCursor]
+          properties:
+            limit: { type: integer, description: Maximum number of items in a page }
+            nextCursor: { type: [string, "null"], description: Opaque; null on the last page }
+    Filter:
+      type: string
+      enum: [smoke, coffee, quiet, shade, shelter]
+    Kind:
+      type: string
+      enum: [cafe, bar, terrace, park, bench, smoking, shelter]
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        displayName: { type: string }
+        preferredTypes: { type: array, items: { $ref: "#/components/schemas/Filter" } }
+        radiusM: { type: integer }
+        createdAt: { type: string, format: date-time }
+    MePatch:
+      type: object
+      additionalProperties: false
+      properties:
+        displayName: { type: string, minLength: 2, maxLength: 40 }
+        preferredTypes: { type: array, items: { $ref: "#/components/schemas/Filter" } }
+        radiusM: { type: integer, minimum: 300, maximum: 3000 }
+    AccessToken:
+      type: object
+      required: [accessToken, tokenType, expiresIn, expiresAt]
+      properties:
+        accessToken: { type: string }
+        tokenType: { type: string, const: Bearer }
+        expiresIn: { type: integer, description: Seconds (900 = 15 min) }
+        expiresAt: { type: string, format: date-time }
+    Session:
+      allOf:
+        - $ref: "#/components/schemas/AccessToken"
+        - type: object
+          required: [user]
+          properties: { user: { $ref: "#/components/schemas/User" } }
+    Tag:
+      type: object
+      properties:
+        icon: { type: string }
+        label: { type: string }
+    SpotInput:
+      type: object
+      additionalProperties: false
+      required: [name, type, lat, lng]
+      properties:
+        name: { type: string, minLength: 3, maxLength: 60 }
+        type: { $ref: "#/components/schemas/Kind" }
+        lat: { type: number, minimum: -90, maximum: 90 }
+        lng: { type: number, minimum: -180, maximum: 180 }
+        description: { type: string, maxLength: 500 }
+        accessTip: { type: string, maxLength: 300 }
+        address: { type: string, maxLength: 200 }
+        features: { type: array, maxItems: 10, items: { $ref: "#/components/schemas/Tag" } }
+        filters: { type: array, items: { $ref: "#/components/schemas/Filter" } }
+        quiet: { type: integer, minimum: 1, maximum: 5 }
+        isPrivate: { type: boolean }
+    SpotPatch:
+      description: Any subset of SpotInput (lat and lng together); null clears description, accessTip or address
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 3, maxLength: 60 }
+        type: { $ref: "#/components/schemas/Kind" }
+        lat: { type: number, minimum: -90, maximum: 90 }
+        lng: { type: number, minimum: -180, maximum: 180 }
+        description: { type: [string, "null"], maxLength: 500 }
+        accessTip: { type: [string, "null"], maxLength: 300 }
+        address: { type: [string, "null"], maxLength: 200 }
+        features: { type: array, maxItems: 10, items: { $ref: "#/components/schemas/Tag" } }
+        filters: { type: array, items: { $ref: "#/components/schemas/Filter" } }
+        quiet: { type: integer, minimum: 1, maximum: 5 }
+        isPrivate: { type: boolean }
+    Spot:
+      type: object
+      properties:
+        id: { type: string }
+        source: { type: string, enum: [community, osm] }
+        kind: { $ref: "#/components/schemas/Kind" }
+        name: { type: string }
+        lat: { type: number }
+        lng: { type: number }
+        features: { type: array, items: { $ref: "#/components/schemas/Tag" } }
+        filters: { type: array, items: { $ref: "#/components/schemas/Filter" } }
+        description: { type: string }
+        accessTip: { type: string }
+        image: { type: string, description: First photo }
+        rating: { type: [number, "null"] }
+        ratingCount: { type: integer }
+        isFavorite: { type: boolean }
+        distanceM: { type: integer }
+        walkMin: { type: integer, description: At 80 m per minute }
+        openNow: { type: [boolean, "null"] }
+        isPrivate: { type: boolean }
+    Photo:
+      type: object
+      properties:
+        name: { type: string }
+        url: { type: string }
+        canDelete: { type: boolean }
+    Review:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        rating: { type: integer }
+        calm: { type: [integer, "null"] }
+        clean: { type: [integer, "null"] }
+        seating: { type: [integer, "null"] }
+        comment: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        author: { type: object, properties: { name: { type: string } } }
+        isMine: { type: boolean }
+    SpotDetail:
+      allOf:
+        - { $ref: "#/components/schemas/Spot" }
+        - type: object
+          properties:
+            photos: { type: array, items: { $ref: "#/components/schemas/Photo" } }
+            averages:
+              type: object
+              properties:
+                rating: { type: [number, "null"] }
+                calm: { type: [number, "null"] }
+                clean: { type: [number, "null"] }
+                seating: { type: [number, "null"] }
+                count: { type: integer }
+            reviews: { type: array, items: { $ref: "#/components/schemas/Review" } }
+            myReview: { oneOf: [{ $ref: "#/components/schemas/Review" }, { type: "null" }] }
+            isOwner: { type: boolean }
+    Weather:
+      type: object
+      properties:
+        temperature: { type: number }
+        precipitation: { type: number }
+        label: { type: string }
+    Health:
+      type: object
+      required: [status, checkedAt]
+      properties:
+        status: { type: string, enum: [healthy, unhealthy] }
+        checkedAt: { type: string, format: date-time }
+
+  responses:
+    BadRequest: { description: Invalid data (fields tells which), content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    Unauthorized:
+      description: Not logged in, or token invalid / expired / revoked
+      headers: { WWW-Authenticate: { description: Bearer challenge, schema: { type: string } } }
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    Forbidden: { description: "Not allowed (not the author, or a call from another site)", content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    NotFound: { description: "Not found (or hidden, e.g. someone else's private spot)", content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    Conflict: { description: "Conflict (email taken, 6 photos already)", content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    PreconditionFailed: { description: If-Match doesn't match the current version, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    TooLarge: { description: "Body too large (16 KB JSON, 5 MB photo)", content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    UnsupportedMediaType: { description: Wrong Content-Type, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    TooManyRequests:
+      description: Rate limited
+      headers: { Retry-After: { $ref: "#/components/headers/RetryAfter" } }
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    Unavailable:
+      description: Upstream service down
+      headers: { Retry-After: { $ref: "#/components/headers/RetryAfter" } }
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }

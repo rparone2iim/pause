@@ -8,6 +8,27 @@
       "when": 1791887105984,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791985996162,
+      "tag": "0001_bootcamp_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792052401967,
+      "tag": "0002_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792052402752,
+      "tag": "0003_drop_revoked_tokens",
+      "breakpoints": true
     }
   ]
 }

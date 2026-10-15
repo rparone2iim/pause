@@ -1,79 +1,168 @@
 import "server-only";
-import { randomUUID } from "node:crypto";
-import { NextResponse, type NextRequest } from "next/server";
-import { ZodError, type ZodTypeAny, type z } from "zod";
-import { logger } from "./logger";
+import { randomBytes, randomUUID } from "node:crypto";
+import type { z } from "zod";
 import { env } from "./env";
+import { type FieldErrors, HttpError, PROBLEM_JSON, problem } from "./errors";
+import { log } from "./logger";
 import { clientIp, rateLimit } from "./rateLimit";
-import { HttpError } from "./errors";
+import { spotIdParam } from "./validation";
 
-export { HttpError };
+const MAX_JSON_BYTES = 16 * 1024; // 16 KB: photos go through multipart uploads, never JSON
+const GLOBAL_LIMIT = { limit: 120, windowMs: 60_000 }; // per IP, every API route
 
-export type Meta = { requestId: string; ip: string };
+export interface RouteContext<P> {
+  req: Request;
+  url: URL;
+  params: P;
+  requestId: string;
+}
+
+const TRACEPARENT = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
 
 /**
- * Enveloppe TOUTES les routes de l'API.
- *  - Pilier 2 : rate limit global (120 req/min/IP)
- *  - Pilier 6 : log structuré de chaque requête + requestId
- *  - Pilier 6 : AUCUNE erreur technique (stack trace, SQL…) ne part au client
+ * W3C trace context: the trace id sent by Cloud Run's load balancer (or the client) is kept, so one request
+ * can be followed from the proxy to our logs; otherwise a new one is started. Echoed back in `traceparent`.
  */
-export function route<C>(handler: (req: NextRequest, ctx: C, meta: Meta) => Promise<Response>) {
-  return async (req: NextRequest, ctx: C): Promise<Response> => {
+function traceContext(req: Request) {
+  const m = TRACEPARENT.exec(req.headers.get("traceparent") ?? "");
+  const traceId = m && !/^0+$/.test(m[1]) ? m[1] : randomBytes(16).toString("hex");
+  return { traceId, traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-${m?.[3] ?? "01"}` };
+}
+
+/** Cloud Logging groups every log line of a request under its trace when this field is present. */
+const traceField = (traceId: string) => (env.VERTEX_PROJECT ? { "logging.googleapis.com/trace": `projects/${env.VERTEX_PROJECT}/traces/${traceId}` } : { traceId });
+
+interface RouteOptions {
+  /** Extra per-IP limit for this route, e.g. sign-ups. */
+  rateLimit?: { name: string; limit: number; windowMs: number };
+}
+
+/**
+ * The wrapper around every API route:
+ * request id → global rate limit (120 req/min/IP) → route limit → handler
+ * (requireUser, readJson + Zod, assertOwner, database) → error formatting → security headers → one log line.
+ * Unexpected errors are logged in full server-side; the client only gets a generic message.
+ */
+export function route<P = Record<string, never>>(handler: (ctx: RouteContext<P>) => Promise<Response>, options: RouteOptions = {}) {
+  return async (req: Request, context: { params: Promise<unknown> }) => {
     const requestId = randomUUID();
+    const started = Date.now();
+    const url = new URL(req.url);
     const ip = clientIp(req);
-    const start = Date.now();
+    const trace = traceContext(req);
     let res: Response;
     try {
-      env(); // vérifie la config (crash clair si une variable manque)
-      rateLimit(`global:${ip}`, 120, 60_000);
-      res = await handler(req, ctx, { requestId, ip });
-    } catch (err) {
-      res = toErrorResponse(err, requestId, req);
+      for (const [key, { limit, windowMs }] of [
+        [`global:${ip}`, GLOBAL_LIMIT],
+        ...(options.rateLimit ? ([[`${options.rateLimit.name}:${ip}`, options.rateLimit]] as const) : []),
+      ] as const) {
+        const r = rateLimit(key, limit, windowMs);
+        if (!r.ok) throw new HttpError(429, "Trop de requêtes, réessaie plus tard.", { headers: { "Retry-After": String(r.retryAfter) } });
+      }
+      res = await handler({ req, url, params: (await context.params) as P, requestId });
+    } catch (e) {
+      const ctx = { requestId, instance: url.pathname };
+      if (e instanceof HttpError) {
+        res = json(problem(e.status, e.message, ctx, e.options.fields), { status: e.status, headers: { "Content-Type": PROBLEM_JSON, ...e.options.headers } });
+      } else {
+        log("error", "unhandled_error", { requestId, ...traceField(trace.traceId), method: req.method, path: url.pathname, error: e instanceof Error ? (e.stack ?? e.message) : String(e) });
+        res = json(problem(500, "Une erreur est survenue, réessaie.", ctx), { status: 500, headers: { "Content-Type": PROBLEM_JSON } });
+      }
     }
     res.headers.set("X-Request-Id", requestId);
-    if (!res.headers.has("Cache-Control")) res.headers.set("Cache-Control", "no-store"); // pas de cache des réponses API
-    logger.info({ requestId, ip, method: req.method, path: req.nextUrl.pathname, status: res.status, ms: Date.now() - start });
+    res.headers.set("traceparent", trace.traceparent);
+    res.headers.set("X-Content-Type-Options", "nosniff");
+    if (!res.headers.has("Cache-Control")) res.headers.set("Cache-Control", "no-store");
+    // Only the path is logged: query strings can carry personal data (coordinates, search terms).
+    log(res.status >= 500 ? "error" : res.status >= 400 ? "warn" : "info", "http_request", {
+      requestId,
+      ...traceField(trace.traceId),
+      method: req.method,
+      path: url.pathname,
+      status: res.status,
+      durationMs: Date.now() - started,
+    });
     return res;
   };
 }
 
-function toErrorResponse(err: unknown, requestId: string, req: NextRequest): Response {
-  if (err instanceof HttpError) {
-    return NextResponse.json({ error: { code: err.code, message: err.message }, requestId }, { status: err.status, headers: err.headers });
-  }
-  if (err instanceof ZodError) {
-    // On renvoie QUEL champ est invalide (utile au front), jamais la valeur reçue ni de détail interne.
-    const fields: Record<string, string> = {};
-    for (const issue of err.issues) fields[issue.path.join(".") || "_"] ??= issue.message;
-    return NextResponse.json({ error: { code: "VALIDATION", message: "Données invalides", fields }, requestId }, { status: 400 });
-  }
-  // Erreur inattendue : détail complet dans les logs serveur, message générique au client.
-  logger.error({ requestId, method: req.method, path: req.nextUrl.pathname, err }, "Erreur non gérée");
-  return NextResponse.json({ error: { code: "INTERNAL", message: "Une erreur interne est survenue" }, requestId }, { status: 500 });
+export function json(data: unknown, init: { status?: number; headers?: Record<string, string> } = {}) {
+  return new Response(JSON.stringify(data), {
+    status: init.status ?? 200,
+    headers: { "Content-Type": "application/json; charset=utf-8", ...init.headers },
+  });
 }
 
-const MAX_JSON_BYTES = 16 * 1024; // 16 Ko : largement assez pour un spot ou un avis
+/** A collection: items wrapped in `data`, with the page metadata (REST: never a bare, unbounded array). */
+export function page<T>(data: T[], limit: number, nextCursor: string | null = null, extra: Record<string, unknown> = {}) {
+  return { data, page: { limit, nextCursor }, ...extra };
+}
 
-/**
- * Pilier 4 : lit et valide un body JSON.
- *  - refuse si ce n'est pas du JSON (415) ou si c'est trop gros (413)
- *  - valide avec un schéma Zod .strict() → tout champ inconnu = rejet
- */
-export async function readJson<S extends ZodTypeAny>(req: NextRequest, schema: S): Promise<z.infer<S>> {
-  if (!req.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-    throw new HttpError(415, "UNSUPPORTED_MEDIA_TYPE", "Le corps doit être en JSON");
+export function noContent(headers: Record<string, string> = {}) {
+  return new Response(null, { status: 204, headers });
+}
+
+function fieldErrors(error: z.ZodError): FieldErrors {
+  const out: FieldErrors = {};
+  for (const issue of error.issues) {
+    if (issue.code === "unrecognized_keys") {
+      for (const k of issue.keys) out[[...issue.path, k].join(".")] = "Champ non autorisé";
+    } else {
+      out[issue.path.join(".") || "body"] ??= issue.message;
+    }
   }
-  const text = await req.text();
-  if (Buffer.byteLength(text) > MAX_JSON_BYTES) {
-    throw new HttpError(413, "PAYLOAD_TOO_LARGE", "Requête trop volumineuse");
-  }
-  let data: unknown;
+  return out;
+}
+
+/** Content-Type (415), size ≤ 16 KB (413), JSON syntax (400), then exact schema validation (400 + fields). */
+export async function readJson<S extends z.ZodType>(req: Request, schema: S, mediaTypes = ["application/json"]): Promise<z.infer<S>> {
+  const type = (req.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (!mediaTypes.includes(type)) throw new HttpError(415, `Le corps de la requête doit être en ${mediaTypes.join(" ou ")}.`);
+  const declared = Number(req.headers.get("content-length") ?? 0);
+  if (declared > MAX_JSON_BYTES) throw new HttpError(413, "Requête trop volumineuse.");
+  const raw = await req.text();
+  if (Buffer.byteLength(raw) > MAX_JSON_BYTES) throw new HttpError(413, "Requête trop volumineuse.");
+  let body: unknown;
   try {
-    data = JSON.parse(text);
+    body = JSON.parse(raw);
   } catch {
-    throw new HttpError(400, "BAD_JSON", "JSON mal formé");
+    throw new HttpError(400, "JSON invalide.");
   }
-  return schema.parse(data);
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) throw new HttpError(400, "Certains champs ne sont pas valides.", { fields: fieldErrors(parsed.error) });
+  return parsed.data;
 }
 
-export const ok = (data: unknown, status = 200) => NextResponse.json(data, { status });
+/** Query string validation: a malformed parameter is a 400 with field details. */
+export function readQuery<S extends z.ZodType>(url: URL, schema: S): z.infer<S> {
+  const parsed = schema.safeParse(Object.fromEntries(url.searchParams));
+  if (!parsed.success) throw new HttpError(400, "Paramètres invalides.", { fields: fieldErrors(parsed.error) });
+  return parsed.data;
+}
+
+/** A `{id}` path segment: anything malformed is simply an unknown spot. */
+export function readSpotId(raw: string) {
+  const r = spotIdParam.safeParse(raw);
+  if (!r.success) throw new HttpError(404, "Spot introuvable.");
+  return r.data;
+}
+
+// --- Idempotency-Key support for duplicate-sensitive POSTs (kept 24h in memory) ---
+const g = globalThis as unknown as { idempotent?: Map<string, { at: number; status: number; body: string; headers: [string, string][] }> };
+const idempotent = (g.idempotent ??= new Map());
+
+export async function withIdempotency(req: Request, scope: string, run: () => Promise<Response>): Promise<Response> {
+  const key = req.headers.get("idempotency-key");
+  if (!key) return run();
+  if (key.length > 100) throw new HttpError(400, "Idempotency-Key trop long.");
+  const id = `${scope}:${key}`;
+  const hit = idempotent.get(id);
+  if (hit && Date.now() - hit.at < 24 * 3600_000) {
+    return new Response(hit.body, { status: hit.status, headers: [...hit.headers, ["Idempotent-Replayed", "true"]] });
+  }
+  const res = await run();
+  if (res.status < 500) {
+    idempotent.set(id, { at: Date.now(), status: res.status, body: await res.clone().text(), headers: [...res.headers.entries()] });
+  }
+  return res;
+}

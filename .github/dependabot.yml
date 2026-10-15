@@ -1,9 +1,11 @@
-# Pilier 5 : mises à jour de sécurité automatiques (une PR par semaine, testée par la CI avant merge)
+# Pilier 5 : mises à jour de sécurité automatiques (une PR par semaine, testée par la CI avant merge).
+# cooldown : on attend 7 jours après la publication d'une version (un paquet piégé est en général retiré avant).
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
     open-pull-requests-limit: 5
     groups:
       mineures:
@@ -11,6 +13,8 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
   - package-ecosystem: docker
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 7 }

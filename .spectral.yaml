@@ -1,0 +1,23 @@
+# Lint du contrat OpenAPI (public/openapi.yaml) : règles standard + règles de la cheatsheet REST.
+extends: ["spectral:oas"]
+rules:
+  operation-description: off # chaque opération a déjà un summary
+  paths-kebab-case:
+    description: Chemins en minuscules kebab-case (paramètres entre accolades autorisés)
+    severity: error
+    given: $.paths[*]~
+    then:
+      function: pattern
+      functionOptions: { match: "^(/([a-z0-9]+(-[a-z0-9]+)*|\\{[a-zA-Z]+\\}))+$" }
+  errors-are-problem-details:
+    description: Toute réponse d'erreur 4xx/5xx est en application/problem+json (RFC 9457)
+    severity: error
+    given: $.components.responses[*].content
+    then:
+      field: application/problem+json
+      function: truthy
+  operation-ids:
+    description: Chaque opération a un operationId
+    severity: error
+    given: $.paths[*][get,post,put,patch,delete]
+    then: { field: operationId, function: truthy }
