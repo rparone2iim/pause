@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "node scripts/copy-maplibre-worker.mjs && next dev",
+    "build": "node scripts/copy-maplibre-worker.mjs && next build",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
@@ -23,6 +23,7 @@
     "contract:lint": "npx --yes @stoplight/spectral-cli@6.15.0 lint openapi.yaml --fail-severity=error"
   },
   "dependencies": {
+    "@maplibre/maplibre-gl-leaflet": "0.1.4",
     "bcryptjs": "3.0.3",
     "class-variance-authority": "0.7.1",
     "cmdk": "1.1.1",
@@ -31,6 +32,7 @@
     "jose": "6.2.12",
     "leaflet": "1.9.4",
     "lucide-react": "1.48.0",
+    "maplibre-gl": "6.11.2",
     "next": "15.5.27",
     "opening_hours": "3.15.0",
     "pg": "8.23.1",

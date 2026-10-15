@@ -150,12 +150,6 @@
 
 /* Map tiles: softened in light mode, inverted in dark mode (OpenStreetMap has no free dark style). */
 /* Light, "Positron-like" look: fewer colors, less contrast, brighter. */
-.pause-tiles {
-  filter: saturate(0.3) contrast(0.82) brightness(1.1);
-}
-.dark .pause-tiles {
-  filter: invert(1) hue-rotate(180deg) saturate(0.3) brightness(0.9) contrast(0.85);
-}
 
 /* The selected spot's card, under its marker: no Leaflet tooltip chrome. */
 .leaflet-tooltip.pause-card-tooltip {
