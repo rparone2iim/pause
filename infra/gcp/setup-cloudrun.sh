@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Droits Google Cloud pour l'app sur Cloud Run et pour son déploiement par GitHub Actions.
+# Droits Google Cloud pour l'app sur Cloud Run et pour son déploiement par GitHub Actions,
+# plus les réglages de sécurité de la base et le nettoyage des vieilles images.
 # À lancer une seule fois, par le propriétaire du projet (relançable sans risque).
 #   bash infra/gcp/setup-cloudrun.sh
 #
@@ -58,5 +59,20 @@ for SA in "$APP_SA" "$MIG_SA"; do
   gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT" \
     --member "serviceAccount:$DEPLOY_SA" --role roles/iam.serviceAccountUser --quiet >/dev/null
 done
+
+echo "▶ Base Cloud SQL : sauvegarde chaque nuit (7 gardées), protection anti-suppression, TLS obligatoire"
+gcloud sql instances patch pause-db --project "$PROJECT" --backup-start-time 02:00 --retained-backups-count 7 \
+  --deletion-protection --ssl-mode ENCRYPTED_ONLY --quiet
+
+echo "▶ Images : on garde les 10 dernières, le reste est supprimé après 7 jours"
+POLICY=$(mktemp); trap 'rm -f "$POLICY"' EXIT
+cat > "$POLICY" <<'JSON'
+[
+  {"name": "garder-les-10-dernieres", "action": {"type": "Keep"}, "mostRecentVersions": {"keepCount": 10}},
+  {"name": "supprimer-le-reste-apres-7-jours", "action": {"type": "Delete"}, "condition": {"tagState": "any", "olderThan": "7d"}}
+]
+JSON
+gcloud artifacts repositories set-cleanup-policies pause --location "$REGION" --project "$PROJECT" \
+  --policy "$POLICY" --no-dry-run >/dev/null
 
 echo "✔ Droits en place. Le prochain push sur main déploie sur Cloud Run."
