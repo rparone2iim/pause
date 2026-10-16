@@ -20,6 +20,8 @@ info:
     - Unknown request fields are rejected (strict validation, 400); clients must ignore unknown response fields.
     - Global rate limit: 120 requests per minute per IP (429 + `Retry-After`). A known path with the wrong method → 405 + `Allow`.
 servers:
+  - url: /api/v1
+    description: This site (same origin as the page, used by Swagger UI in development)
   - url: https://pause-572691549135.europe-west9.run.app/api/v1
     description: Production (Google Cloud Run)
   - url: http://localhost:3000/api/v1
