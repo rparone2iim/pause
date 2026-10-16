@@ -34,7 +34,7 @@ const TYPE_LABELS: Record<SpotType, { label: string; emoji: string }> = {
  *     Au-delà → réponses automatiques (mode local), l'app continue de marcher.
  *  4. Message ≤ 500 caractères, historique ≤ 10 messages, réponse ≤ 800 tokens.
  *
- * Sécurité (voir SECURITY.md § IA) :
+ * Sécurité :
  *  - En prod, pas de clé du tout (Vertex AI + jeton temporaire). En dev, la clé reste côté serveur.
  *  - L'IA ne reçoit QUE : la question, l'historique court, et la liste des spots proches.
  *    Pas d'email, pas d'id utilisateur, pas de coordonnées GPS de l'utilisateur.

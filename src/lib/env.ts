@@ -33,5 +33,3 @@ const schema = z.object({
 const isBuild = process.env.NEXT_PHASE === "phase-production-build";
 
 export const env = schema.parse(isBuild ? { DATABASE_URL: "postgresql://build", JWT_SECRET: "build-time-placeholder-not-a-secret!", ...process.env } : process.env);
-
-export const allowedOrigins = env.APP_ORIGIN.split(",").map((o) => o.trim());

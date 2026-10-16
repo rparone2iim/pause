@@ -31,6 +31,9 @@ export const FILTER_DESCRIPTIONS: Record<SpotFilter, string> = {
 export const SPOT_FILTERS = Object.keys(FILTER_LABELS) as SpotFilter[];
 
 /** Search radius choices (300 m – 3 km). */
+/** Photos per spot: enforced by the server, shown by the forms. */
+export const MAX_PHOTOS_PER_SPOT = 6;
+
 export const RADIUS_OPTIONS = [300, 500, 800, 1000, 2000, 3000] as const;
 
 export const formatRadius = (m: number) => (m >= 1000 ? `${m / 1000} km` : `${m} m`);

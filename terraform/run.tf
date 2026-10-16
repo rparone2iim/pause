@@ -19,7 +19,7 @@ resource "google_cloud_run_v2_service" "app" {
     timeout                          = "300s"
     max_instance_request_concurrency = 80
 
-    # Une seule instance : le rate limit est en mémoire (voir SECURITY.md, "Reste à faire").
+    # Une seule instance : le rate limit est en mémoire (un rate limit partagé demanderait Redis / Cloud Armor).
     scaling {
       max_instance_count = 1
     }
