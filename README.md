@@ -37,6 +37,10 @@ npm run db:seed             # données de démo (autour de l'école et à La Dé
 npm run dev                 # http://localhost:3000
 ```
 
+`npm run dev` et `npm run build` copient d'abord le worker MapLibre de `node_modules` vers `public/maplibre/` (ignoré par Git) : la carte le charge depuis notre propre site.
+
+**Documentation de l'API (Swagger UI) :** en dev, **http://localhost:3000/docs** affiche `openapi.yaml` de façon interactive. En production, `/docs` répond 404 : le site ne publie pas la carte de son API.
+
 **« Demander à l'IA » (Gemini) :** sans configuration, le dialogue répond avec son repli local (mots-clés + conseils de détente). En prod, il utilise Gemini via **Vertex AI, sans aucune clé**. Pour avoir les vraies réponses Gemini en dev, il faut un accès au projet Google Cloud. Mets `VERTEX_PROJECT=pause-demo-3zbux5` dans `.env`, puis lance avec `VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token) npm run dev` (le jeton dure 1 h). Autre solution : une clé AI Studio dans `GEMINI_API_KEY`. Le modèle par défaut est `gemini-3.5-flash-lite`.
 
 **Comptes de démo :** `demo@pause.dev` et `alex@pause.dev`, mot de passe `DemoPause2026`.
@@ -52,6 +56,9 @@ npm run dev                 # http://localhost:3000
 | `npm run audit` | Audit des dépendances de production |
 | `npm run lint` | ESLint (aussi lancé par `npm run build`) |
 | `npm run typecheck` | Vérification TypeScript |
+| `npm run contract:lint` | Valide `openapi.yaml` avec Spectral (règles dans `.spectral.yaml`) |
+| `npm run contract:check` | Vérifie que les routes codées sont exactement les routes du contrat OpenAPI |
+| `npm run test:watch` | Vitest en mode surveillance (relance les tests à chaque modification) |
 | `npm run db:generate` | Génère une migration SQL après une modification de `src/db/schema.ts` (écrire aussi son inverse dans `db/migrations/down/`, sinon les tests échouent) |
 | `npm run db:rollback` | Annule la dernière migration (`-- 2` : les deux dernières, `-- --all` : tout, base vide) |
 
@@ -106,7 +113,7 @@ Le fichier est `.github/workflows/ci-cd.yml`.
 | Photos | sharp (vérifie, redimensionne, convertit en WebP, efface les métadonnées) |
 | Logs | pino (JSON, secrets masqués) |
 | IA | Gemini (Flash-Lite, API REST) via **Vertex AI sans clé** en production, avec filtre hors sujet, quotas et repli local |
-| Carte | Leaflet + react-leaflet + tuiles OpenStreetMap |
+| Carte | Fond **vectoriel OpenFreeMap** (données OpenStreetMap, gratuit, **sans clé ni compte**), dessiné par **MapLibre GL** dans Leaflet (`@maplibre/maplibre-gl-leaflet`) ; style clair `positron` ou sombre `dark` selon le thème. Marqueurs, cercle du rayon et infobulles : Leaflet + react-leaflet |
 | Design | Tailwind CSS v4 + shadcn/ui, icônes Lucide |
 | Déploiement | Google Cloud Run + Cloud SQL + Cloud Storage, CI/CD GitHub Actions |
 
@@ -122,13 +129,14 @@ db/
 └─ seed.ts              ← données de démo
 src/
 ├─ app/                 ← Next.js : 1 dossier = 1 URL
-│  ├─ api/              ← l'API (chaque route.ts = 1-3 lignes qui appellent un controller)
+│  ├─ api/              ← l'API (chaque route.ts = 1-3 lignes qui appellent un controller ; api/[...path] : 404 JSON pour le reste)
 │  ├─ page.tsx          ← Explorer (carte + liste)
 │  ├─ spots/[id]/       ← fiche spot (+ edit/ pour l'auteur)
 │  ├─ spots/new/        ← ajouter un spot
 │  ├─ profile/  (auth)/login/  (auth)/register/
-│  └─ layout.tsx  globals.css
-├─ components/          ← morceaux d'interface (maps.tsx + maps.impl.tsx, PlaceCard, SpotForm…, Providers.tsx)
+│  ├─ docs/             ← Swagger UI de openapi.yaml, en dev uniquement (404 en production)
+│  └─ layout.tsx  template.tsx  error.tsx  not-found.tsx  globals.css
+├─ components/          ← morceaux d'interface (maps.tsx + maps.impl.tsx = la carte OpenFreeMap, PlaceCard, SpotForm, AskAI…, ui/ = shadcn)
 ├─ hooks/               ← état partagé du front, un hook par sujet : useAuth, usePlaces, useTheme, useUi, useRequireAuth
 ├─ db/schema.ts         ← les tables (users, spots, photos, reviews, favorites + sessions)
 ├─ lib/                 ← le cœur : sécurité + outils
@@ -137,8 +145,9 @@ src/
 │  ├─ repositories/     ← accès à la base (Drizzle) — seule couche qui touche `db`
 │  ├─ schemas.ts        ← schémas Zod des corps de requête, PARTAGÉS par l'API et les formulaires du front
 │  ├─ domain-errors.ts  ← erreurs métier (NotFound, Forbidden…) ; errors.ts les traduit en statut HTTP, en un seul endroit
-│  ├─ auth.ts  http.ts  validation.ts  rateLimit.ts  upload.ts  spots.ts  google-auth.ts
-│  ├─ db.ts  env.ts  logger.ts  errors.ts  geo.ts  constants.ts  types.ts
+│  ├─ auth.ts  auth-redirect.ts  http.ts  validation.ts  rateLimit.ts  upload.ts  spots.ts  google-auth.ts
+│  ├─ db.ts  env.ts  logger.ts  errors.ts  geo.ts  pagination.ts  constants.ts  types.ts  icons.tsx  utils.ts
+│  ├─ image-proxy.ts    ← images Wikimedia re-servies par /api/v1/images (URL signée HMAC, ré-encodée)
 │  ├─ client.ts         ← côté navigateur : api() ajoute l'access token (en mémoire) et le renouvelle via le cookie
 │  ├─ osm.ts  google-places.ts ← lieux (Google Places + OpenStreetMap), Nominatim, Open-Meteo
 │  ├─ assistant.ts  nearby.ts ← « Demander à l'IA » (Gemini via Vertex AI sans clé, filtre hors sujet, repli local)
@@ -148,6 +157,7 @@ tests/                       ← unit/ (règles), components/ (formulaires, jsdo
 scripts/security-test.mjs    ← les 74 attaques     scripts/security-test.sh ← les 27 d'origine
 openapi.yaml                 ← contrat de l'API (OpenAPI 3.1), hors de public/ : pas publié par le site
 scripts/contract-check.mjs   ← routes codées = routes du contrat OpenAPI     .spectral.yaml ← règles du contrat
+scripts/copy-maplibre-worker.mjs ← copie le worker de la carte dans public/maplibre/ (avant dev et build)
 terraform/                   ← toute l'infra Google Cloud en Terraform
 .github/workflows/ci-cd.yml  ← CI/CD     Dockerfile  docker-compose.yml  Caddyfile  SECURITY.md
 ```
@@ -158,8 +168,8 @@ Une requête API : `middleware.ts` (Origin, JWT, 405) → `route()` (requestId, 
 ## Les routes de l'API
 
 Toutes les routes sont sous **`/api/v1/`**. Toutes demandent d'être connecté, sauf l'inscription, la connexion, l'affichage d'une photo ou d'une image, et `/api/v1/health`.
-Le navigateur n'appelle **que notre API** (plus les tuiles de la carte) : les images des lieux OpenStreetMap sont re-servies par `/api/v1/images`.
-Le design suit la cheatsheet REST : noms au pluriel, kebab-case, champs en lowerCamelCase, **erreurs en Problem Details** (`application/problem+json` : `{ type, title, status, detail, instance, code, requestId, fields? }`), collections bornées `{ data, page: { limit, nextCursor } }`, `Location` sur les 201, `WWW-Authenticate` sur les 401, `Retry-After` sur les 429, `Allow` sur les 405, `ETag` / `If-None-Match` (304) / `If-Match` (412) sur les spots, JSON Merge Patch pour les `PATCH`, `traceparent` sur chaque réponse. Contrat complet : **`openapi.yaml`** (OpenAPI 3.1, vérifié en CI, pas publié par le site).
+Le navigateur n'appelle **que notre API** (plus la carte, sur `tiles.openfreemap.org`, seul autre domaine autorisé par la CSP) : les images des lieux OpenStreetMap sont re-servies par `/api/v1/images`.
+Le design suit la cheatsheet REST : noms au pluriel, kebab-case, champs en lowerCamelCase, **erreurs en Problem Details** (`application/problem+json` : `{ type, title, status, detail, instance, code, requestId, fields? }`), collections bornées `{ data, page: { limit, nextCursor } }`, `Location` sur les 201, `WWW-Authenticate` sur les 401, `Retry-After` sur les 429, `Allow` sur les 405, `ETag` / `If-None-Match` (304) / `If-Match` (412) sur les spots, JSON Merge Patch pour les `PATCH`, `traceparent` sur chaque réponse. Contrat complet : **`openapi.yaml`** (OpenAPI 3.1, vérifié en CI, pas publié en production), à parcourir en dev sur **`/docs`** (Swagger UI).
 
 | Méthode | URL | Ce qu'elle fait |
 |---|---|---|
@@ -187,7 +197,7 @@ Le design suit la cheatsheet REST : noms au pluriel, kebab-case, champs en lower
 - **Spots privés** (visibles seulement par leur auteur).
 - **Access token court + refresh token rotatif** (cookie HttpOnly, SameSite=Strict) avec **détection de vol** : un refresh token rejoué coupe toute la session. **Vraie déconnexion** côté serveur (un seul appareil), **suppression de compte** (RGPD) avec ses photos.
 - Architecture **controllers / services / repositories**.
-- `Idempotency-Key` (pas de doublon si on clique deux fois), pagination des avis, `/api/v1/health`, contrat OpenAPI, mode sombre.
+- `Idempotency-Key` (pas de doublon si on clique deux fois), pagination des avis, `/api/v1/health`, contrat OpenAPI avec Swagger UI en dev, mode sombre (la carte a son vrai style sombre, pas une image inversée).
 - **« Demander à l'IA »** (Gemini via Vertex AI, sans clé) : une vraie conversation qui te guide vers un spot et donne des **conseils de détente** (respiration, étirements, yoga de bureau). Les spots qu'elle connaît sont lus **côté serveur** dans notre base (jamais envoyés par le navigateur), **jamais ta position**, et elle ne peut recommander que ces spots (vérifié). Les questions hors sujet sont filtrées **avant** d'appeler Gemini, des quotas par jour protègent le budget, et un mode local prend le relais si l'IA ne répond pas.
 - **Accessibilité** : 0 erreur à l'audit axe-core (WCAG 2 A/AA) sur toutes les pages, en clair et en sombre : champs étiquetés, contrastes AA, cartes cliquables au clavier, titres hiérarchisés, erreurs annoncées.
 - **Descriptions et photos dans la liste** à gauche de la carte.
