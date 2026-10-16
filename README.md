@@ -1,5 +1,7 @@
 # ⏸ Pause
 
+**Team:** Aldric Vendas, Alain Sliman and Raphaël Parone
+
 A web app that shows the best break spots around you on a map: smoking corner, café, quiet bench or shelter.
 You create an account, log in, and see the spots within a radius of 300 m to 3 km, sorted from nearest to farthest.
 Each spot has photos, tags, a description, a "how to get there" section and reviews. Anyone can add a spot.
