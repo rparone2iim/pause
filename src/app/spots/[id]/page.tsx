@@ -28,7 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiError, api, errorMessage } from "@/lib/client";
 import { reviewBody, toFieldErrors } from "@/lib/schemas";
-import { KIND_META, SCORE_LABELS } from "@/lib/constants";
+import { KIND_META, MAX_PHOTOS_PER_SPOT, SCORE_LABELS } from "@/lib/constants";
 import { directionsUrl, withDistance } from "@/lib/geo";
 import { NamedIcon } from "@/lib/icons";
 import { useAuth } from "@/hooks/use-auth";
@@ -39,7 +39,6 @@ import { useRequireAuth } from "@/hooks/use-require-auth";
 import { cn, timeAgo } from "@/lib/utils";
 
 const DAYS: Record<string, string> = { Mo: "lun", Tu: "mar", We: "mer", Th: "jeu", Fr: "ven", Sa: "sam", Su: "dim", PH: "fériés" };
-const MAX_PHOTOS = 6;
 
 /** "Mo-Fr 08:00-19:00; Sa off" → "lun–ven 08:00–19:00 · sam fermé" */
 function frenchHours(oh: string) {
@@ -336,13 +335,13 @@ export default function SpotPage() {
               size="icon-lg"
               className="size-12 rounded-full"
               onClick={() => fileRef.current?.click()}
-              disabled={uploading || spot.photos.length >= MAX_PHOTOS}
+              disabled={uploading || spot.photos.length >= MAX_PHOTOS_PER_SPOT}
               aria-label="Ajouter une photo"
             >
               {uploading ? <Loader2 className="animate-spin" /> : <ImagePlus />}
             </Button>
           </TooltipTrigger>
-          <TooltipContent>{spot.photos.length >= MAX_PHOTOS ? "6 photos maximum" : "Ajouter une photo"}</TooltipContent>
+          <TooltipContent>{spot.photos.length >= MAX_PHOTOS_PER_SPOT ? `${MAX_PHOTOS_PER_SPOT} photos maximum` : "Ajouter une photo"}</TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>

@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/client";
-import { CATEGORY_CONFIG, categoryOfKind } from "@/lib/constants";
+import { CATEGORY_CONFIG, MAX_PHOTOS_PER_SPOT, categoryOfKind } from "@/lib/constants";
 import { NamedIcon } from "@/lib/icons";
 import { spotCreateBody, toFieldErrors } from "@/lib/schemas";
 import type { SpotInput } from "@/hooks/use-places";
@@ -27,7 +27,6 @@ const CATEGORY_ICONS: Record<Archetype, React.ComponentType<{ className?: string
   perch: Armchair,
 };
 
-export const MAX_PHOTOS = 6;
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 
 interface Draft {
@@ -126,8 +125,8 @@ export function SpotForm({ spot, busy, fields, onSubmit }: Props) {
     if (!files) return;
     const next = [...photos];
     for (const file of Array.from(files)) {
-      if (next.length >= MAX_PHOTOS) {
-        toast(`${MAX_PHOTOS} photos maximum`, "info");
+      if (next.length >= MAX_PHOTOS_PER_SPOT) {
+        toast(`${MAX_PHOTOS_PER_SPOT} photos maximum`, "info");
         break;
       }
       if (!/^image\/(jpeg|png|webp)$/.test(file.type) || file.size > MAX_PHOTO_BYTES) {
@@ -279,7 +278,7 @@ export function SpotForm({ spot, busy, fields, onSubmit }: Props) {
                 </button>
               </div>
             ))}
-            {photos.length < MAX_PHOTOS && (
+            {photos.length < MAX_PHOTOS_PER_SPOT && (
               <button
                 type="button"
                 onClick={() => fileRef.current?.click()}
@@ -287,7 +286,7 @@ export function SpotForm({ spot, busy, fields, onSubmit }: Props) {
                 className="size-24 shrink-0 rounded-3xl border border-dashed bg-card hover:bg-muted flex flex-col items-center justify-center gap-1 text-muted-foreground text-xs transition-all active:scale-95"
               >
                 <ImagePlus className="size-6" />
-                {photos.length}/{MAX_PHOTOS}
+                {photos.length}/{MAX_PHOTOS_PER_SPOT}
               </button>
             )}
           </div>

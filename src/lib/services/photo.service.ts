@@ -1,7 +1,8 @@
 import "server-only";
+import { MAX_PHOTOS_PER_SPOT } from "../constants";
 import { ConflictError, ForbiddenError, NotFoundError } from "../domain-errors";
 import { log } from "../logger";
-import { MAX_PHOTOS_PER_SPOT, photoRepository } from "../repositories/photo.repository";
+import { photoRepository } from "../repositories/photo.repository";
 import { spotRepository } from "../repositories/spot.repository";
 import { getOrCreateSpot } from "../spots";
 import { cleanPhoto, deleteStoredPhotos, photoUrl, readStoredPhoto, storePhoto } from "../upload";

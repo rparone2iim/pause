@@ -1,9 +1,8 @@
 import "server-only";
 import { asc, eq, inArray, or, sql } from "drizzle-orm";
 import { photos, spots } from "@/db/schema";
+import { MAX_PHOTOS_PER_SPOT } from "../constants";
 import { db } from "../db";
-
-export const MAX_PHOTOS_PER_SPOT = 6;
 
 export const photoRepository = {
   findByFilename: async (filename: string) => (await db.select().from(photos).where(eq(photos.filename, filename)).limit(1))[0] ?? null,

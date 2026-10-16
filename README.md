@@ -6,7 +6,7 @@ A web app that shows the best break spots around you on a map: smoking corner, c
 You create an account, log in, and see the spots within a radius of 300 m to 3 km, sorted from nearest to farthest.
 Each spot has photos, tags, a description, a "how to get there" section and reviews. Anyone can add a spot.
 
-Security: see **[SECURITY.md](SECURITY.md)** (10 pillars + answers for the jury). `npm run security:test` runs 74 real attacks (and `npm run security:test:alain` 27 more), all blocked. `npm test` runs the unit and component tests (Vitest).
+Security: `npm run security:test` runs 74 real attacks (and `npm run security:test:alain` 27 more), all blocked. `npm test` runs the unit and component tests (Vitest).
 
 **Live: https://pause-572691549135.europe-west9.run.app** (Google Cloud Run, deployed automatically on every merge to `main`).
 
@@ -119,7 +119,7 @@ The workflow is `.github/workflows/ci-cd.yml`.
 | AI | **Gemini** (Flash-Lite, REST API) through **Vertex AI with no key** in production (AI Studio key possible in dev), with an off-topic filter, daily quotas and a local fallback |
 | Map | **OpenFreeMap** vector basemap (OpenStreetMap data, free, **no key, no account**), drawn by **MapLibre GL** inside **Leaflet** (`@maplibre/maplibre-gl-leaflet`); light `positron` or dark `dark` style depending on the theme. Markers, radius circle and tooltips: Leaflet + **react-leaflet** |
 | Places and data | **Google Places API** (cafés, bars, parks, opening hours; called with no key from Cloud Run), **OpenStreetMap** through **Overpass** (benches, ashtrays, shelters), **opening_hours** (parses OSM opening hours), **Nominatim** (address search), **Open-Meteo** (weather), **Wikimedia Commons** (place pictures, re-served by our API) |
-| Design | **Tailwind CSS v4** + **shadcn/ui** (**Radix UI** primitives, class-variance-authority, tw-animate-css), **cmdk** (search dialog), **sonner** (toasts), **Lucide** icons |
+| Design | **Tailwind CSS v4** + **shadcn/ui** (**Radix UI** primitives, class-variance-authority, tw-animate-css), **sonner** (toasts), **Lucide** icons |
 | Tests | **Vitest** + **Testing Library** + **jsdom** (unit, component and integration tests), `scripts/security-test.mjs` / `.sh` (attacks against a running server) |
 | Code quality | **ESLint** (`eslint-config-next`), **TypeScript** (`tsc --noEmit`), **Semgrep** (SAST), **Spectral** (OpenAPI lint) |
 | API contract | **OpenAPI 3.1** (`openapi.yaml`), **Swagger UI** (`swagger-ui-react`) on `/docs` in dev only |
@@ -168,7 +168,7 @@ openapi.yaml                 ← API contract (OpenAPI 3.1), outside public/: no
 scripts/contract-check.mjs   ← coded routes = routes of the OpenAPI contract     .spectral.yaml ← contract rules
 scripts/copy-maplibre-worker.mjs ← copies the map worker to public/maplibre/ (before dev and build)
 terraform/                   ← the whole Google Cloud infrastructure in Terraform
-.github/workflows/ci-cd.yml  ← CI/CD     Dockerfile  docker-compose.yml  Caddyfile  SECURITY.md
+.github/workflows/ci-cd.yml  ← CI/CD     Dockerfile  docker-compose.yml  Caddyfile
 ```
 
 An API request: `middleware.ts` (Origin, JWT, 405) → `route()` (requestId, traceparent, rate limit) → controller (`requireUser()` = JWT + active session, `readJson()` + Zod)
